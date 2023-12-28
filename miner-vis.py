@@ -138,9 +138,11 @@ def create_graph(commits, sortition_sats):
                 if commit.parent:
                     # If the parent is not the previous block, color it red
                     color = "black"
+                    penwidth = "1"
                     if commits[commit.parent].burn_block_height != last_height:
                         color = "red"
-                    c.edge(commit.parent, commit.block_header_hash, color=color)
+                        penwidth = "4"
+                    c.edge(commit.parent, commit.block_header_hash, color=color, penwidth=penwidth)
 
             last_height = block_height
 
@@ -193,14 +195,25 @@ def generate_html(n_blocks, image_path, stats):
                 width: 100%;
                 height: auto;
             }}
+            table, th, td {{
+                border: 1px solid black;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                padding: 5px;
+                text-align: left;
+            }}
         </style>
     </head>
     <body>
-        <p>This page was last updated at: {current_time}<br>Note: Refreshes every 3 minutes for the latest.</p>
+        <p>This page was last updated at: {current_time}<br>Note: Data refreshes every 3 minutes. Refresh the page for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
-        <p>Avg spend per block: {stats['avg_spend_per_block']:,} Sats</p>
-        <p>Win %: {stats['win_percentage']:.2%}</p>
+        <table>
+            <tr><th>Average Spend per Block</th><td>{stats['avg_spend_per_block']:,}</td></tr>
+            <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
+        </table>
+        <h2>Block Commits</h2>
         <a href="{image_path}" target="_blank">
             <img src="{image_path}" alt="Block Commits Graph" class="responsive-img">
         </a>
