@@ -163,14 +163,48 @@ def collect_stats(commits):
 
     if len(tracked_commits_per_block) == 0:
         print("No tracked commits found")
-        return
+        return {
+            "avg_spend_per_block": 0,
+            "win_percentage": 0,
+        }
 
     # Print stats
     spend = 0
     for spends in tracked_commits_per_block.values():
         spend += sum(spends)
-    print(f"Avg spend per block: {spend/len(tracked_commits_per_block)}")
-    print(f"Win %: {wins / len(tracked_commits_per_block) * 100}:.2%")
+
+    return {
+        "avg_spend_per_block": round(spend / len(tracked_commits_per_block)),
+        "win_percentage": wins / len(tracked_commits_per_block),
+    }
+
+
+def generate_html(n_blocks, image_path, stats):
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Block Commits Visualization</title>
+        <style>
+            .responsive-img {{
+                width: 100%;
+                height: auto;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>Last {n_blocks} Blocks</h1>
+        <h2>Statistics</h2>
+        <p>Avg spend per block: {stats['avg_spend_per_block']:,} Sats</p>
+        <p>Win %: {stats['win_percentage']:.2%}</p>
+        <a href="{image_path}" target="_blank">
+            <img src="{image_path}" alt="Block Commits Graph" class="responsive-img">
+        </a>
+    </body>
+    </html>
+    """
+    return html_content
 
 
 if __name__ == "__main__":
@@ -181,5 +215,14 @@ if __name__ == "__main__":
     db_path = sys.argv[1]
     last_n_blocks = int(sys.argv[2])
     commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
+
     create_graph(commits, sortition_sats)
-    collect_stats(commits)
+
+    stats = collect_stats(commits)
+    print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
+    print(f"Win %: {stats['win_percentage']:.2%}")
+
+    # Generate and save HTML content
+    html_content = generate_html(last_n_blocks, "mining_status.gv.png", stats)
+    with open("output/index.html", "w") as file:
+        file.write(html_content)
