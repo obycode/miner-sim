@@ -138,11 +138,30 @@ def create_graph(commits, sortition_sats):
                     color = "red"
                 c.edge(commit.parent, commit.block_header_hash, color=color)
 
-    # Add global graph label (can be used as a footer or header)
-    graph_metadata = f"Summary Info:\n- Forks: {forks}"
-    dot.attr(label=graph_metadata, labelloc="t", fontsize="10")
-
     dot.render("output/mining_status.gv", view=True, format="png")
+
+
+def collect_stats(commits):
+    tracked_commits_per_block = {}
+    wins = 0
+    for commit in commits.values():
+        if commit.sender in tracked_miners:
+            # Keep an array of all tracked commits per block
+            tracked_commits_per_block[
+                commit.burn_block_height
+            ] = tracked_commits_per_block.get(commit.burn_block_height, [])
+            tracked_commits_per_block[commit.burn_block_height].append(commit.spend)
+
+            # Count the number of wins
+            if commit.children:
+                wins += 1
+
+    # Print stats
+    spend = 0
+    for spends in tracked_commits_per_block.values():
+        spend += sum(spends)
+    print(f"Avg spend per block: {spend/len(tracked_commits_per_block)}")
+    print(f"Win %: {wins / len(tracked_commits_per_block) * 100}%")
 
 
 if __name__ == "__main__":
@@ -154,3 +173,4 @@ if __name__ == "__main__":
     last_n_blocks = int(sys.argv[2])
     commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
     create_graph(commits, sortition_sats)
+    collect_stats(commits)
