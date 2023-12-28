@@ -3,6 +3,7 @@
 import sqlite3
 import sys
 from graphviz import Digraph
+import datetime
 
 
 class Commit:
@@ -180,6 +181,7 @@ def collect_stats(commits):
 
 
 def generate_html(n_blocks, image_path, stats):
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -194,6 +196,7 @@ def generate_html(n_blocks, image_path, stats):
         </style>
     </head>
     <body>
+        <p>This page was last updated at: {current_time}<br>Note: Refreshes every 3 minutes for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
         <p>Avg spend per block: {stats['avg_spend_per_block']:,} Sats</p>
