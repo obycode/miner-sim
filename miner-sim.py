@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 
 import random
 from graphviz import Digraph
