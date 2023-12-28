@@ -16,7 +16,7 @@ class Commit:
         parent=None,
     ):
         self.block_header_hash = block_header_hash
-        self.sender = sender
+        self.sender = sender[1:-1]  # Remove quotes
         self.burn_block_height = burn_block_height
         self.spend = spend
         self.sortition_id = sortition_id
@@ -99,23 +99,28 @@ def create_graph(commits, sortition_sats):
 
     # Group nodes by sortition_id and create edges to parent nodes
     for commit in commits.values():
-        truncated_sender = commit.sender[1:9]
+        truncated_sender = commit.sender[0:8]
         node_label = f"{truncated_sender}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
         with dot.subgraph(name=f"cluster_{commit.sortition_id}") as c:
             c.attr(
                 label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
             )
             # Apply different styles if the node has children
+            fillcolor = "white"
+            color = "black"
+            penwidth = "1"
+            style = ""
             if commit.children:
-                c.node(
-                    commit.block_header_hash,
-                    node_label,
-                    style="filled",
-                    color="darkslategray2",
-                    penwidth="2",
-                )
-            else:
-                c.node(commit.block_header_hash, node_label)
+                color = "blue"
+                penwidth = "4"
+            c.node(
+                commit.block_header_hash,
+                node_label,
+                color=color,
+                fillcolor=fillcolor,
+                penwidth=penwidth,
+                style=style
+            )
             if commit.parent:
                 # If the parent is not the previous block, color it red
                 color = "black"
