@@ -138,7 +138,7 @@ def create_graph(commits, sortition_sats):
                     color = "red"
                 c.edge(commit.parent, commit.block_header_hash, color=color)
 
-    dot.render("output/mining_status.gv", view=True, format="png")
+    dot.render("output/mining_status.gv", format="png")
 
 
 def collect_stats(commits):
@@ -155,6 +155,10 @@ def collect_stats(commits):
             # Count the number of wins
             if commit.children:
                 wins += 1
+
+    if len(tracked_commits_per_block) == 0:
+        print("No tracked commits found")
+        return
 
     # Print stats
     spend = 0
