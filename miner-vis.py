@@ -7,9 +7,16 @@ from graphviz import Digraph
 
 class Commit:
     def __init__(
-        self, block_header_hash, burn_block_height, spend, sortition_id, parent=None
+        self,
+        block_header_hash,
+        sender,
+        burn_block_height,
+        spend,
+        sortition_id,
+        parent=None,
     ):
         self.block_header_hash = block_header_hash
+        self.sender = sender
         self.burn_block_height = burn_block_height
         self.spend = spend
         self.sortition_id = sortition_id
@@ -33,6 +40,7 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     query = """
     SELECT
         block_header_hash,
+        apparent_sender,
         sortition_id,
         vtxindex,
         block_height,
@@ -56,6 +64,7 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
 
     for (
         block_header_hash,
+        apparent_sender,
         sortition_id,
         vtxindex,
         block_height,
@@ -68,7 +77,12 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
             commits[parent].children = True
 
         commits[block_header_hash] = Commit(
-            block_header_hash, block_height, int(burn_fee), sortition_id, parent
+            block_header_hash,
+            apparent_sender,
+            block_height,
+            int(burn_fee),
+            sortition_id,
+            parent,
         )
         parent_hashes[(block_height, vtxindex)] = block_header_hash
         sortition_sats[sortition_id] = sortition_sats.get(sortition_id, 0) + int(
@@ -85,8 +99,8 @@ def create_graph(commits, sortition_sats):
 
     # Group nodes by sortition_id and create edges to parent nodes
     for commit in commits.values():
-        truncated_hash = commit.block_header_hash[:8]
-        node_label = f"{truncated_hash}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+        truncated_sender = commit.sender[1:9]
+        node_label = f"{truncated_sender}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
         with dot.subgraph(name=f"cluster_{commit.sortition_id}") as c:
             c.attr(
                 label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
@@ -115,9 +129,7 @@ def create_graph(commits, sortition_sats):
 
     # Add global graph label (can be used as a footer or header)
     graph_metadata = f"Summary Info:\n- Forks: {forks}"
-    dot.attr(
-        label=graph_metadata, labelloc="b", fontsize="10"
-    )  # 'b' for bottom, 't' for top
+    dot.attr(label=graph_metadata, labelloc="t", fontsize="10")
 
     dot.render("output/mining_status.gv", view=True, format="png")
 
