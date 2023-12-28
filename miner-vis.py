@@ -24,7 +24,7 @@ class Commit:
         self.children = False  # Initially no children
 
     def __repr__(self):
-        return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend}, Children: {self.children})"
+        return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
 
 
 tracked_miners = []
@@ -111,9 +111,9 @@ def create_graph(commits, sortition_sats):
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
                 truncated_sender = commit.sender[0:8]
-                node_label = f"{truncated_sender}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+                node_label = f"{truncated_sender}\nSpend: {commit.spend:,} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
                 c.attr(
-                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
+                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}"
                 )
                 # Apply different styles if the node has children
                 fillcolor = "white"
