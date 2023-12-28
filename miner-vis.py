@@ -2,6 +2,22 @@ import sqlite3
 import sys
 from graphviz import Digraph
 
+
+class Commit:
+    def __init__(
+        self, block_header_hash, burn_block_height, spend, sortition_id, parent=None
+    ):
+        self.block_header_hash = block_header_hash
+        self.burn_block_height = burn_block_height
+        self.spend = spend
+        self.sortition_id = sortition_id
+        self.parent = parent
+        self.children = False  # Initially no children
+
+    def __repr__(self):
+        return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend}, Children: {self.children})"
+
+
 def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
@@ -29,33 +45,80 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
         block_height ASC
     """
     cursor.execute(query, (lower_bound_height,))
-    commits = cursor.fetchall()
+    raw_commits = cursor.fetchall()
 
-    # Prepare a dictionary to hold the parent hashes
+    # Prepare dictionaries to hold the parent hashes and total spends
     parent_hashes = {}
     sortition_sats = {}
-    for block_header_hash, sortition_id, vtxindex, block_height, burn_fee, _, _ in commits:
+    commits = {}  # Track all nodes, by block_header_hash
+
+    for (
+        block_header_hash,
+        sortition_id,
+        vtxindex,
+        block_height,
+        burn_fee,
+        parent_block_ptr,
+        parent_vtxindex,
+    ) in raw_commits:
+        parent = parent_hashes.get((parent_block_ptr, parent_vtxindex))
+        if parent:
+            commits[parent].children = True
+
+        commits[block_header_hash] = Commit(
+            block_header_hash, block_height, int(burn_fee), sortition_id, parent
+        )
         parent_hashes[(block_height, vtxindex)] = block_header_hash
-        sortition_sats[sortition_id] = sortition_sats.get(sortition_id, 0) + int(burn_fee)
+        sortition_sats[sortition_id] = sortition_sats.get(sortition_id, 0) + int(
+            burn_fee
+        )
 
     conn.close()
-    return commits, parent_hashes, sortition_sats
+    return commits, sortition_sats
 
-def create_graph(commits, parent_hashes, sortition_sats):
-    dot = Digraph(comment='Mining Status')
+
+def create_graph(commits, sortition_sats):
+    dot = Digraph(comment="Mining Status")
+    forks = 0
 
     # Group nodes by sortition_id and create edges to parent nodes
-    for block_header_hash, sortition_id, _, block_height, burn_fee, parent_block_ptr, parent_vtxindex in commits:
-        print(f'Block Header Hash: {block_header_hash}')
-        with dot.subgraph(name=f'cluster_{sortition_id}') as c:
-            sortition_spend = sortition_sats.get(sortition_id, 0)
-            c.attr(label=f'Block Height: {block_height}\nTotal Spend: {sortition_spend}')
-            c.node(block_header_hash, f'{block_header_hash[:8]}\nSpend: {int(burn_fee)/sortition_spend:.2%}')
-            parent_hash = parent_hashes.get((parent_block_ptr, parent_vtxindex))
-            if parent_hash:
-                c.edge(parent_hash, block_header_hash)
+    for commit in commits.values():
+        truncated_hash = commit.block_header_hash[:8]
+        node_label = f"{truncated_hash}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+        with dot.subgraph(name=f"cluster_{commit.sortition_id}") as c:
+            c.attr(
+                label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
+            )
+            # Apply different styles if the node has children
+            if commit.children:
+                c.node(
+                    commit.block_header_hash,
+                    node_label,
+                    style="filled",
+                    color="darkslategray2",
+                    penwidth="2",
+                )
+            else:
+                c.node(commit.block_header_hash, node_label)
+            if commit.parent:
+                # If the parent is not the previous block, color it red
+                color = "black"
+                if (
+                    commits[commit.parent].burn_block_height
+                    < commit.burn_block_height - 1
+                ):
+                    forks += 1
+                    color = "red"
+                c.edge(commit.parent, commit.block_header_hash, color=color)
 
-    dot.render('output/mining_status.gv', view=True, format='png')
+    # Add global graph label (can be used as a footer or header)
+    graph_metadata = f"Summary Info:\n- Forks: {forks}"
+    dot.attr(
+        label=graph_metadata, labelloc="b", fontsize="10"
+    )  # 'b' for bottom, 't' for top
+
+    dot.render("output/mining_status.gv", view=True, format="png")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -64,6 +127,5 @@ if __name__ == "__main__":
 
     db_path = sys.argv[1]
     last_n_blocks = int(sys.argv[2])
-    commits, parent_hashes, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
-
-    create_graph(commits, parent_hashes, sortition_sats)
+    commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
+    create_graph(commits, sortition_sats)
