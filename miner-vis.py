@@ -98,45 +98,50 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
 
 def create_graph(commits, sortition_sats):
     dot = Digraph(comment="Mining Status")
-    forks = 0
 
-    # Group nodes by sortition_id and create edges to parent nodes
-    for commit in commits.values():
-        truncated_sender = commit.sender[0:8]
-        node_label = f"{truncated_sender}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
-        with dot.subgraph(name=f"cluster_{commit.sortition_id}") as c:
-            c.attr(
-                label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
-            )
-            # Apply different styles if the node has children
-            fillcolor = "white"
-            color = "black"
-            penwidth = "1"
-            style = ""
-            if commit.children:
-                color = "blue"
-                penwidth = "4"
-            if commit.sender in tracked_miners:
-                fillcolor = "aquamarine"
-                style = "filled"
-            c.node(
-                commit.block_header_hash,
-                node_label,
-                color=color,
-                fillcolor=fillcolor,
-                penwidth=penwidth,
-                style=style,
-            )
-            if commit.parent:
-                # If the parent is not the previous block, color it red
+    # Keep track of a representative node for each cluster to enforce order
+    last_height = None
+
+    # Group nodes by block_height and create edges to parent nodes
+    for block_height in sorted(
+        set(commit.burn_block_height for commit in commits.values())
+    ):
+        with dot.subgraph(name=f"cluster_{block_height}") as c:
+            for commit in filter(
+                lambda x: x.burn_block_height == block_height, commits.values()
+            ):
+                truncated_sender = commit.sender[0:8]
+                node_label = f"{truncated_sender}\nSpend: {commit.spend} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+                c.attr(
+                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]}"
+                )
+                # Apply different styles if the node has children
+                fillcolor = "white"
                 color = "black"
-                if (
-                    commits[commit.parent].burn_block_height
-                    < commit.burn_block_height - 1
-                ):
-                    forks += 1
-                    color = "red"
-                c.edge(commit.parent, commit.block_header_hash, color=color)
+                penwidth = "1"
+                style = ""
+                if commit.children:
+                    color = "blue"
+                    penwidth = "4"
+                if commit.sender in tracked_miners:
+                    fillcolor = "aquamarine"
+                    style = "filled"
+                c.node(
+                    commit.block_header_hash,
+                    node_label,
+                    color=color,
+                    fillcolor=fillcolor,
+                    penwidth=penwidth,
+                    style=style,
+                )
+                if commit.parent:
+                    # If the parent is not the previous block, color it red
+                    color = "black"
+                    if commits[commit.parent].burn_block_height != last_height:
+                        color = "red"
+                    c.edge(commit.parent, commit.block_header_hash, color=color)
+
+            last_height = block_height
 
     dot.render("output/mining_status.gv", format="png")
 
@@ -165,7 +170,7 @@ def collect_stats(commits):
     for spends in tracked_commits_per_block.values():
         spend += sum(spends)
     print(f"Avg spend per block: {spend/len(tracked_commits_per_block)}")
-    print(f"Win %: {wins / len(tracked_commits_per_block) * 100}%")
+    print(f"Win %: {wins / len(tracked_commits_per_block) * 100}:.2%")
 
 
 if __name__ == "__main__":
