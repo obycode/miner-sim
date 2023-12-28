@@ -27,6 +27,9 @@ class Commit:
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend}, Children: {self.children})"
 
 
+tracked_miners = []
+
+
 def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
@@ -113,13 +116,16 @@ def create_graph(commits, sortition_sats):
             if commit.children:
                 color = "blue"
                 penwidth = "4"
+            if commit.sender in tracked_miners:
+                fillcolor = "aquamarine"
+                style = "filled"
             c.node(
                 commit.block_header_hash,
                 node_label,
                 color=color,
                 fillcolor=fillcolor,
                 penwidth=penwidth,
-                style=style
+                style=style,
             )
             if commit.parent:
                 # If the parent is not the previous block, color it red
