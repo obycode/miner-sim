@@ -150,8 +150,10 @@ def create_graph(commits, sortition_sats):
                 if commit.sender in tracked_miners:
                     fillcolor = "aquamarine"
                     style = "filled"
-                if commit.canonical:
-                    color = "darkgreen"
+                if not commit.canonical:
+                    style = "dashed"
+                else:
+                    style = "solid"
                 c.node(
                     commit.block_header_hash,
                     node_label,
