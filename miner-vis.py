@@ -130,7 +130,7 @@ def create_graph(commits, sortition_sats):
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
                 truncated_sender = commit.sender[0:8]
-                node_label = f"{truncated_sender}\nSpend: {commit.spend:,} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+                node_label = f"{truncated_sender}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
 
                 if commit.tracked:
                     tracked_spend += commit.spend
