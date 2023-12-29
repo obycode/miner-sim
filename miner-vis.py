@@ -8,6 +8,14 @@ import os
 
 
 tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
+named_miners_raw = os.getenv("NAMED_MINERS", "").split(",")
+if len(tracked_miners) == len(named_miners_raw):
+    named_miners = dict(zip(tracked_miners, named_miners_raw))
+else:
+    print(
+        "Error: The lists tracked_miners and named_miners_raw have different lengths."
+    )
+    named_miners = {}
 
 
 class Commit:
@@ -129,8 +137,10 @@ def create_graph(commits, sortition_sats):
             for commit in filter(
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
-                truncated_sender = commit.sender[0:8]
-                node_label = f"{truncated_sender}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
+                sender = named_miners.get(commit.sender)
+                if not sender:
+                    sender = commit.sender[0:8]
+                node_label = f"{sender}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
 
                 if commit.tracked:
                     tracked_spend += commit.spend
@@ -152,8 +162,10 @@ def create_graph(commits, sortition_sats):
                     style = "filled"
                 if not commit.canonical:
                     style = f"{style},dashed"
+                    penwidth = "1"
                 else:
                     style = f"{style},solid"
+                    penwidth = "4"
                 c.node(
                     commit.block_header_hash,
                     node_label,
