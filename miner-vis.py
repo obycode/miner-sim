@@ -5,6 +5,7 @@ import sys
 from graphviz import Digraph
 import datetime
 import os
+import re
 
 
 tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
@@ -190,7 +191,7 @@ def create_graph(commits, sortition_sats):
 
             last_height = block_height
 
-    dot.render("output/mining_status.gv", format="png")
+    return dot.pipe(format="svg").decode("utf-8")
 
 
 def collect_stats(commits):
@@ -226,8 +227,13 @@ def collect_stats(commits):
     }
 
 
-def generate_html(n_blocks, image_path, stats):
+def generate_html(n_blocks, svg_content, stats):
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Use regex to replace width and height attributes in the SVG
+    svg_content = re.sub(r'width="\d+pt"', 'width="100%"', svg_content)
+    svg_content = re.sub(r'height="\d+pt"', 'height="100%"', svg_content)
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -235,8 +241,8 @@ def generate_html(n_blocks, image_path, stats):
         <meta charset="UTF-8">
         <title>Block Commits Visualization</title>
         <style>
-            .responsive-img {{
-                width: 100%;
+            .responsive-svg {{
+                max-width: 100%;
                 height: auto;
             }}
             table, th, td {{
@@ -258,9 +264,9 @@ def generate_html(n_blocks, image_path, stats):
             <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
         </table>
         <h2>Block Commits</h2>
-        <a href="{image_path}" target="_blank">
-            <img src="{image_path}" alt="Block Commits Graph" class="responsive-img">
-        </a>
+        <div class="responsive-svg">
+            {svg_content}
+        </div>
     </body>
     </html>
     """
@@ -277,13 +283,13 @@ if __name__ == "__main__":
     commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
     mark_canonical_blocks(db_path, commits)
 
-    create_graph(commits, sortition_sats)
+    svg_string = create_graph(commits, sortition_sats)
 
     stats = collect_stats(commits)
     print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
     print(f"Win %: {stats['win_percentage']:.2%}")
 
     # Generate and save HTML content
-    html_content = generate_html(last_n_blocks, "mining_status.gv.png", stats)
+    html_content = generate_html(last_n_blocks, svg_string, stats)
     with open("output/index.html", "w") as file:
         file.write(html_content)
