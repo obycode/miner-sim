@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from graphviz import Digraph
 import datetime
+import os
 
 
 class Commit:
@@ -28,7 +29,7 @@ class Commit:
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
 
 
-tracked_miners = []
+tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
 
 
 def get_block_commits_with_parents(db_file, last_n_blocks=1000):
@@ -142,7 +143,12 @@ def create_graph(commits, sortition_sats):
                     if commits[commit.parent].burn_block_height != last_height:
                         color = "red"
                         penwidth = "4"
-                    c.edge(commit.parent, commit.block_header_hash, color=color, penwidth=penwidth)
+                    c.edge(
+                        commit.parent,
+                        commit.block_header_hash,
+                        color=color,
+                        penwidth=penwidth,
+                    )
 
             last_height = block_height
 
