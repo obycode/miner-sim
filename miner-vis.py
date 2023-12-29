@@ -151,9 +151,9 @@ def create_graph(commits, sortition_sats):
                     fillcolor = "aquamarine"
                     style = "filled"
                 if not commit.canonical:
-                    style = "dashed"
+                    style = f"{style},dashed"
                 else:
-                    style = "solid"
+                    style = f"{style},solid"
                 c.node(
                     commit.block_header_hash,
                     node_label,
