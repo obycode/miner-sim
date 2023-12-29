@@ -19,6 +19,7 @@ class Commit:
         spend,
         sortition_id,
         parent=None,
+        canonical=False,
     ):
         self.block_header_hash = block_header_hash
         self.sender = sender[1:-1]  # Remove quotes
@@ -28,6 +29,7 @@ class Commit:
         self.parent = parent
         self.tracked = self.sender in tracked_miners
         self.children = False  # Initially no children
+        self.canonical = canonical
 
     def __repr__(self):
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
@@ -99,6 +101,19 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     return commits, sortition_sats
 
 
+def mark_canonical_blocks(db_file, commits):
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+
+    tip = cursor.execute(
+        "SELECT canonical_stacks_tip_hash FROM snapshots ORDER BY block_height DESC LIMIT 1;"
+    ).fetchone()[0]
+
+    while tip:
+        commits[tip].canonical = True
+        tip = commits[tip].parent
+
+
 def create_graph(commits, sortition_sats):
     dot = Digraph(comment="Mining Status")
 
@@ -121,7 +136,7 @@ def create_graph(commits, sortition_sats):
                     tracked_spend += commit.spend
 
                 c.attr(
-                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}\nTracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"
+                    label=f"Burn Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}\nTracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"
                 )
 
                 # Apply different styles if the node has children
@@ -135,6 +150,8 @@ def create_graph(commits, sortition_sats):
                 if commit.sender in tracked_miners:
                     fillcolor = "aquamarine"
                     style = "filled"
+                if commit.canonical:
+                    color = "darkgreen"
                 c.node(
                     commit.block_header_hash,
                     node_label,
@@ -244,6 +261,7 @@ if __name__ == "__main__":
     db_path = sys.argv[1]
     last_n_blocks = int(sys.argv[2])
     commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
+    mark_canonical_blocks(db_path, commits)
 
     create_graph(commits, sortition_sats)
 
