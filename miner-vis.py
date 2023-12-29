@@ -238,7 +238,7 @@ def generate_html(n_blocks, image_path, stats):
         </style>
     </head>
     <body>
-        <p>This page was last updated at: {current_time}<br>Note: Data refreshes every 3 minutes. Refresh the page for the latest.</p>
+        <p>This page was last updated at: {current_time}<br>Note: Data refreshes every minute. Refresh the page for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
         <table>
