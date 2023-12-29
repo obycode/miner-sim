@@ -7,6 +7,9 @@ import datetime
 import os
 
 
+tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
+
+
 class Commit:
     def __init__(
         self,
@@ -23,13 +26,11 @@ class Commit:
         self.spend = spend
         self.sortition_id = sortition_id
         self.parent = parent
+        self.tracked = self.sender in tracked_miners
         self.children = False  # Initially no children
 
     def __repr__(self):
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
-
-
-tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
 
 
 def get_block_commits_with_parents(db_file, last_n_blocks=1000):
@@ -108,15 +109,21 @@ def create_graph(commits, sortition_sats):
     for block_height in sorted(
         set(commit.burn_block_height for commit in commits.values())
     ):
+        tracked_spend = 0
         with dot.subgraph(name=f"cluster_{block_height}") as c:
             for commit in filter(
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
                 truncated_sender = commit.sender[0:8]
                 node_label = f"{truncated_sender}\nSpend: {commit.spend:,} ({commit.spend/sortition_sats[commit.sortition_id]:.2%})"
+
+                if commit.tracked:
+                    tracked_spend += commit.spend
+
                 c.attr(
-                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}"
+                    label=f"Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}\nTracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"
                 )
+
                 # Apply different styles if the node has children
                 fillcolor = "white"
                 color = "black"
