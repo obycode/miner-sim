@@ -165,14 +165,18 @@ def mark_canonical_blocks(db_path, commits):
                 # Fetch the coinbase and fees earned
                 payments_conn = sqlite3.connect(os.path.join(db_path, payments_db))
                 payments_cursor = payments_conn.cursor()
-                (
-                    coinbase,
-                    tx_fees_anchored,
-                    tx_fees_streamed,
-                ) = payments_cursor.execute(
+                # Execute the query
+                result = payments_cursor.execute(
                     "SELECT coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
                     (consensus_hash,),
                 ).fetchone()
+
+                if result:
+                    coinbase, tx_fees_anchored, tx_fees_streamed = result
+                else:
+                    # Handle the case where no matching record is found
+                    coinbase = tx_fees_anchored = tx_fees_streamed = 0
+
                 commit.coinbase_earned = int(coinbase)
                 commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
             else:
@@ -366,7 +370,7 @@ def generate_html(n_blocks, svg_content, stats):
 
 
 def run_server(args):
-    app = Flask(__name__, static_folder='output', static_url_path='')
+    app = Flask(__name__, static_folder="output", static_url_path="")
 
     @app.route("/new_block", methods=["POST"])
     def new_block():
@@ -378,11 +382,11 @@ def run_server(args):
         run_command_line(args)
         return "Graphs rebuilt", 200
 
-    @app.route('/')
+    @app.route("/")
     def index():
-        return app.send_static_file('index.html')
+        return app.send_static_file("index.html")
 
-    @app.route('/<path:path>')
+    @app.route("/<path:path>")
     def static_file(path):
         return send_from_directory(app.static_folder, path)
 
