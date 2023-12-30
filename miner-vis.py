@@ -6,17 +6,35 @@ from graphviz import Digraph
 import datetime
 import os
 import re
+import toml
 
 
-tracked_miners = os.getenv("TRACKED_MINERS", "").split(",")
-named_miners_raw = os.getenv("NAMED_MINERS", "").split(",")
-if len(tracked_miners) == len(named_miners_raw):
-    named_miners = dict(zip(tracked_miners, named_miners_raw))
-else:
-    print(
-        "Error: The lists tracked_miners and named_miners_raw have different lengths."
-    )
-    named_miners = {}
+default_color = "white"
+miner_config = {}
+
+
+def is_miner_tracked(identifier):
+    # Check if the miner is in the config and is tracked
+    miner_info = miner_config.get("miners", {}).get(identifier)
+    if miner_info and miner_info.get("track", False):
+        return True
+    return False
+
+
+def get_miner_color(identifier):
+    # Retrieve the color for the given miner identifier
+    miner_info = miner_config.get("miners", {}).get(identifier)
+    if miner_info:
+        return miner_info.get("color", default_color)
+    return default_color
+
+
+def get_miner_name(identifier):
+    # Retrieve the name for the given miner identifier
+    miner_info = miner_config.get("miners", {}).get(identifier)
+    if miner_info:
+        return miner_info.get("name", identifier[0:8])
+    return identifier[0:8]
 
 
 class Commit:
@@ -36,7 +54,7 @@ class Commit:
         self.spend = spend
         self.sortition_id = sortition_id
         self.parent = parent
-        self.tracked = self.sender in tracked_miners
+        self.tracked = is_miner_tracked(self.sender)
         self.children = False  # Initially no children
         self.canonical = canonical
 
@@ -138,12 +156,9 @@ def create_graph(commits, sortition_sats):
             for commit in filter(
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
-                sender = named_miners.get(commit.sender)
-                if not sender:
-                    sender = commit.sender[0:8]
-                node_label = f"{sender}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
+                node_label = f"{get_miner_name(commit.sender)}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
 
-                if commit.tracked:
+                if is_miner_tracked(commit.sender):
                     tracked_spend += commit.spend
 
                 c.attr(
@@ -151,16 +166,13 @@ def create_graph(commits, sortition_sats):
                 )
 
                 # Apply different styles if the node has children
-                fillcolor = "white"
+                fillcolor = get_miner_color(commit.sender)
+                style = "filled"
                 color = "black"
                 penwidth = "1"
-                style = ""
                 if commit.children:
                     color = "blue"
                     penwidth = "4"
-                if commit.sender in tracked_miners:
-                    fillcolor = "aquamarine"
-                    style = "filled"
                 if not commit.canonical:
                     style = f"{style},dashed"
                     penwidth = "1"
@@ -198,7 +210,7 @@ def collect_stats(commits):
     tracked_commits_per_block = {}
     wins = 0
     for commit in commits.values():
-        if commit.sender in tracked_miners:
+        if commit.tracked:
             # Keep an array of all tracked commits per block
             tracked_commits_per_block[
                 commit.burn_block_height
@@ -274,12 +286,19 @@ def generate_html(n_blocks, svg_content, stats):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python script.py <path_to_database> <last_n_blocks>")
+    if len(sys.argv) != 4:
+        print(
+            "Usage: python script.py <path_to_database> <miner_config_file> <last_n_blocks>"
+        )
         sys.exit(1)
 
     db_path = sys.argv[1]
-    last_n_blocks = int(sys.argv[2])
+    config_path = sys.argv[2]
+    last_n_blocks = int(sys.argv[3])
+
+    with open(config_path, "r") as file:
+        miner_config = toml.load(file)
+
     commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
     mark_canonical_blocks(db_path, commits)
 
