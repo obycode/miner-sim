@@ -7,7 +7,7 @@ from graphviz import Digraph
 import datetime
 import re
 import toml
-from flask import Flask, request
+from flask import Flask, request, abort
 
 default_color = "white"
 
@@ -294,9 +294,13 @@ def run_server(args):
 
     @app.route("/new_block", methods=["POST"])
     def new_block():
+        # Check if the request is from localhost
+        if request.remote_addr != "127.0.0.1":
+            abort(403)  # Forbidden access
+
         print("Received new block notification")
         run_command_line(args)
-        return "Command executed", 200
+        return "Graphs rebuilt", 200
 
     app.run(host="0.0.0.0", port=8088)
 
