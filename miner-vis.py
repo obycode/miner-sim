@@ -201,6 +201,13 @@ def create_graph(commits, sortition_sats):
                         penwidth=penwidth,
                     )
 
+                # If any of the tracked miners spent more than the alert_sats
+                # threshold, color the sortition red.
+                if commit.tracked and commit.spend > miner_config.get(
+                    "alert_sats", 1000000
+                ):
+                    c.attr(bgcolor="red")
+
             last_height = block_height
 
     return dot.pipe(format="svg").decode("utf-8")
