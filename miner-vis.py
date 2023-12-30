@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sqlite3
 import sys
 from graphviz import Digraph
@@ -9,6 +10,8 @@ import re
 import toml
 from flask import Flask, request, abort
 
+sortition_db = "mainnet/burnchain/sortition/marf.sqlite"
+payments_db = "mainnet/chainstate/vm/index.sqlite"
 default_color = "white"
 
 
@@ -71,8 +74,8 @@ class Commit:
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
 
 
-def get_block_commits_with_parents(db_file, last_n_blocks=1000):
-    conn = sqlite3.connect(db_file)
+def get_block_commits_with_parents(db_path, last_n_blocks=1000):
+    conn = sqlite3.connect(os.path.join(db_path, sortition_db))
     cursor = conn.cursor()
 
     # Pre-compute the maximum block height
@@ -140,23 +143,38 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     return commits, sortition_sats
 
 
-def mark_canonical_blocks(db_file, commits):
-    conn = sqlite3.connect(db_file)
+def mark_canonical_blocks(db_path, commits):
+    conn = sqlite3.connect(os.path.join(db_path, sortition_db))
     cursor = conn.cursor()
 
     for block_height in sorted(
         set(commit.burn_block_height for commit in commits.values())
     ):
-        (winning_block_txid, stacks_height) = cursor.execute(
-            "SELECT winning_block_txid, stacks_block_height FROM snapshots WHERE block_height = ?;",
+        (winning_block_txid, stacks_height, consensus_hash) = cursor.execute(
+            "SELECT winning_block_txid, stacks_block_height, consensus_hash FROM snapshots WHERE block_height = ?;",
             (block_height,),
         ).fetchone()
+
         for commit in filter(
             lambda x: x.burn_block_height == block_height, commits.values()
         ):
             if winning_block_txid == commit.txid:
                 commit.won = True
                 commit.stacks_height = stacks_height
+
+                # Fetch the coinbase and fees earned
+                payments_conn = sqlite3.connect(os.path.join(db_path, payments_db))
+                payments_cursor = payments_conn.cursor()
+                (
+                    coinbase,
+                    tx_fees_anchored,
+                    tx_fees_streamed,
+                ) = payments_cursor.execute(
+                    "SELECT coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
+                    (consensus_hash,),
+                ).fetchone()
+                commit.coinbase_earned = int(coinbase)
+                commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
             else:
                 if commit.parent and commit.parent in commits:
                     parent_commit = commits[commit.parent]
@@ -243,6 +261,9 @@ Height: {commit.stacks_height}
 def collect_stats(miner_config, commits):
     tracked_commits_per_block = {}
     wins = 0
+    canonical = 0
+    coinbase_earned = 0
+    fees_earned = 0
     for commit in commits.values():
         if is_miner_tracked(miner_config, commit.sender):
             # Keep an array of all tracked commits per block
@@ -254,6 +275,14 @@ def collect_stats(miner_config, commits):
             # Count the number of wins
             if commit.won:
                 wins += 1
+
+            # Count the number of canonical blocks
+            if commit.canonical:
+                canonical += 1
+
+                # Sum the coinbase and fees earned
+                coinbase_earned += commit.coinbase_earned
+                fees_earned += commit.fees_earned
 
     if len(tracked_commits_per_block) == 0:
         print("No tracked commits found")
@@ -268,8 +297,12 @@ def collect_stats(miner_config, commits):
         spend += sum(spends)
 
     return {
+        "total_spend": spend,
+        "total_coinbase_earned": coinbase_earned,
+        "total_fees_earned": fees_earned,
         "avg_spend_per_block": round(spend / len(tracked_commits_per_block)),
         "win_percentage": wins / len(tracked_commits_per_block),
+        "canonical_percentage": canonical / len(tracked_commits_per_block),
     }
 
 
@@ -313,8 +346,14 @@ def generate_html(n_blocks, svg_content, stats):
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
         <table>
+            <tr><th>Total Spend</th><td>{stats['total_spend']:,}</td></tr>
+            <tr><th>Total Coinbase Earned</th><td>{(stats['total_coinbase_earned']/1000000.0):,} STX</td></tr>
+            <tr><th>Total Fees Earned</th><td>{(stats['total_fees_earned']/1000000.0):,} STX</td></tr>
+            <tr><th>Total Earned</th><td>{((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):,} STX</td></tr>
             <tr><th>Average Spend per Block</th><td>{stats['avg_spend_per_block']:,}</td></tr>
             <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
+            <tr><th>Canonical Percentage</th><td>{stats['canonical_percentage']:.2%}</td></tr>
+            <tr><th>Price Ratio</th><td>{stats['total_spend']/((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):.2f} Sats/STX</td></tr>
         </table>
         <h2>Block Commits</h2>
         <div class="responsive-svg">
@@ -356,8 +395,23 @@ def run_command_line(args):
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
         stats = collect_stats(miner_config, commits)
+        print(f"Total spend: {stats['total_spend']:,} Sats")
+        print(
+            f"Total coinbase earned: {(stats['total_coinbase_earned']/1000000.0):,} STX"
+        )
+        print(f"Total fees earned: {(stats['total_fees_earned']/1000000.0):,} STX")
+        print(
+            f"Total earned: {((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):,} STX"
+        )
         print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
         print(f"Win %: {stats['win_percentage']:.2%}")
+        print(f"Canonical %: {stats['canonical_percentage']:.2%}")
+        if stats["total_coinbase_earned"] + stats["total_fees_earned"] > 0:
+            print(
+                f"Price ratio: {stats['total_spend']/((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):.2f} Sats/STX"
+            )
+        else:
+            print("Price ratio: N/A")
 
         # Generate and save HTML content
         html_content = generate_html(last_n_blocks, svg_string, stats)
