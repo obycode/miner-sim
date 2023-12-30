@@ -50,6 +50,7 @@ class Commit:
         sortition_id,
         parent=None,
         stacks_height=None,
+        block_hash=None,
         won=False,
         canonical=False,
         tip=False,
@@ -64,6 +65,7 @@ class Commit:
         self.sortition_id = sortition_id
         self.parent = parent
         self.stacks_height = stacks_height
+        self.block_hash = block_hash
         self.won = won
         self.canonical = canonical
         self.tip = tip
@@ -167,16 +169,18 @@ def mark_canonical_blocks(db_path, commits):
                 payments_cursor = payments_conn.cursor()
                 # Execute the query
                 result = payments_cursor.execute(
-                    "SELECT coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
+                    "SELECT block_hash, coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
                     (consensus_hash,),
                 ).fetchone()
 
                 if result:
-                    coinbase, tx_fees_anchored, tx_fees_streamed = result
+                    block_hash, coinbase, tx_fees_anchored, tx_fees_streamed = result
                 else:
                     # Handle the case where no matching record is found
                     coinbase = tx_fees_anchored = tx_fees_streamed = 0
+                    block_hash = None
 
+                commit.block_hash = block_hash
                 commit.coinbase_earned = int(coinbase)
                 commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
             else:
@@ -238,6 +242,12 @@ Height: {commit.stacks_height}
                 if commit.spend > miner_config.get("alert_sats", 1000000):
                     node_attrs["fontcolor"] = "red"
                     node_attrs["fontname"] = "bold"
+
+                # If we have the block hash, link to the explorer
+                if commit.block_hash:
+                    node_attrs[
+                        "href"
+                    ] = f"https://explorer.hiro.so/block/0x{commit.block_hash}"
 
                 # Now use the dictionary to set attributes
                 c.node(commit.block_header_hash, node_label, **node_attrs)
