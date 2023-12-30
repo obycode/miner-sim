@@ -8,7 +8,7 @@ from graphviz import Digraph
 import datetime
 import re
 import toml
-from flask import Flask, request, abort
+from flask import Flask, request, abort, send_from_directory
 
 sortition_db = "mainnet/burnchain/sortition/marf.sqlite"
 payments_db = "mainnet/chainstate/vm/index.sqlite"
@@ -366,7 +366,7 @@ def generate_html(n_blocks, svg_content, stats):
 
 
 def run_server(args):
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder='output', static_url_path='')
 
     @app.route("/new_block", methods=["POST"])
     def new_block():
@@ -378,7 +378,15 @@ def run_server(args):
         run_command_line(args)
         return "Graphs rebuilt", 200
 
-    app.run(host="0.0.0.0", port=8088)
+    @app.route('/')
+    def index():
+        return app.send_static_file('index.html')
+
+    @app.route('/<path:path>')
+    def static_file(path):
+        return send_from_directory(app.static_folder, path)
+
+    app.run(host="0.0.0.0", port=8080)
 
 
 def run_command_line(args):
