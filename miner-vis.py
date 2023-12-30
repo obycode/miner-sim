@@ -306,11 +306,11 @@ def run_server(args):
 
 
 def run_command_line(args):
-    print("Generating visualization...", args)
     with open(args.config_path, "r") as file:
         miner_config = toml.load(file)
 
     for index, last_n_blocks in enumerate(args.block_counts):
+        print(f"Generating graph for last {last_n_blocks} blocks...")
         commits, sortition_sats = get_block_commits_with_parents(
             miner_config.get("db_path"), last_n_blocks
         )
@@ -345,18 +345,17 @@ if __name__ == "__main__":
         nargs="*",
         type=int,
         default=[20, 50, 100],
-        help="List of block counts (optional, defaults to [20, 50, 100])",
+        help="Number of blocks to analyze (optional, defaults to [20, 50, 100])",
     )
 
     args = parser.parse_args()
+
+    if not args.config_path:
+        parser.print_help()
+        sys.exit(1)
 
     if args.observer:
         print("Running in observer mode...")
         run_server(args)
     else:
-        if not args.config_path:
-            parser.print_help()
-            sys.exit(1)
-
-        print("Running in command-line mode...")
         run_command_line(args)
