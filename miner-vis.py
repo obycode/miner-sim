@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 
+import argparse
 import sqlite3
 import sys
 from graphviz import Digraph
 import datetime
-import os
 import re
 import toml
-
+from flask import Flask, request
 
 default_color = "white"
-miner_config = {}
 
 
-def is_miner_tracked(identifier):
+def is_miner_tracked(miner_config, identifier):
     # Check if the miner is in the config and is tracked
     miner_info = miner_config.get("miners", {}).get(identifier)
     if miner_info and miner_info.get("track", False):
@@ -21,7 +20,7 @@ def is_miner_tracked(identifier):
     return False
 
 
-def get_miner_color(identifier):
+def get_miner_color(miner_config, identifier):
     # Retrieve the color for the given miner identifier
     miner_info = miner_config.get("miners", {}).get(identifier)
     if miner_info:
@@ -29,7 +28,7 @@ def get_miner_color(identifier):
     return default_color
 
 
-def get_miner_name(identifier):
+def get_miner_name(miner_config, identifier):
     # Retrieve the name for the given miner identifier
     miner_info = miner_config.get("miners", {}).get(identifier)
     if miner_info:
@@ -54,7 +53,6 @@ class Commit:
         self.spend = spend
         self.sortition_id = sortition_id
         self.parent = parent
-        self.tracked = is_miner_tracked(self.sender)
         self.children = False  # Initially no children
         self.canonical = canonical
 
@@ -141,7 +139,7 @@ def mark_canonical_blocks(db_file, commits):
         tip = commits[tip].parent
 
 
-def create_graph(commits, sortition_sats):
+def create_graph(miner_config, commits, sortition_sats):
     dot = Digraph(comment="Mining Status")
 
     # Keep track of a representative node for each cluster to enforce order
@@ -156,39 +154,38 @@ def create_graph(commits, sortition_sats):
             for commit in filter(
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
-                node_label = f"{get_miner_name(commit.sender)}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
+                node_label = f"{get_miner_name(miner_config, commit.sender)}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
 
-                if is_miner_tracked(commit.sender):
+                if is_miner_tracked(miner_config, commit.sender):
                     tracked_spend += commit.spend
 
                 c.attr(
                     label=f"Burn Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}\nTracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"
                 )
 
-                # Apply different styles if the node has children
-                fillcolor = get_miner_color(commit.sender)
-                style = "filled"
-                color = "black"
-                penwidth = "1"
-                if commit.children:
-                    color = "blue"
-                    penwidth = "4"
+                # Initialize the node attributes dictionary
+                node_attrs = {
+                    "color": "blue" if commit.children else "black",
+                    "fillcolor": get_miner_color(miner_config, commit.sender),
+                    "penwidth": "4" if commit.children else "1",
+                    "style": "filled,solid",
+                }
+
+                # Additional modifications based on conditions
                 if not commit.canonical:
-                    style = f"{style},dashed"
-                    penwidth = "1"
-                else:
-                    style = f"{style},solid"
-                    penwidth = "4"
-                c.node(
-                    commit.block_header_hash,
-                    node_label,
-                    color=color,
-                    fillcolor=fillcolor,
-                    penwidth=penwidth,
-                    style=style,
-                )
+                    node_attrs["style"] = "filled,dashed"
+                    node_attrs["penwidth"] = "1"
+
+                # Check if the commit spent more than the alert_sats threshold
+                if commit.spend > miner_config.get("alert_sats", 1000000):
+                    node_attrs["fontcolor"] = "red"
+                    node_attrs["fontname"] = "bold"
+
+                # Now use the dictionary to set attributes
+                c.node(commit.block_header_hash, node_label, **node_attrs)
+
                 if commit.parent:
-                    # If the parent is not the previous block, color it red
+                    # If the parent is not the previous block, color the edge red
                     color = "black"
                     penwidth = "1"
                     if commits[commit.parent].burn_block_height != last_height:
@@ -201,23 +198,16 @@ def create_graph(commits, sortition_sats):
                         penwidth=penwidth,
                     )
 
-                # If any of the tracked miners spent more than the alert_sats
-                # threshold, color the sortition red.
-                if commit.tracked and commit.spend > miner_config.get(
-                    "alert_sats", 1000000
-                ):
-                    c.attr(bgcolor="red")
-
             last_height = block_height
 
     return dot.pipe(format="svg").decode("utf-8")
 
 
-def collect_stats(commits):
+def collect_stats(miner_config, commits):
     tracked_commits_per_block = {}
     wins = 0
     for commit in commits.values():
-        if commit.tracked:
+        if is_miner_tracked(miner_config, commit.sender):
             # Keep an array of all tracked commits per block
             tracked_commits_per_block[
                 commit.burn_block_height
@@ -299,27 +289,32 @@ def generate_html(n_blocks, svg_content, stats):
     return html_content
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print(
-            "Usage: python script.py <path_to_database> <miner_config_file> <optional last_n_blocks>"
-        )
-        sys.exit(1)
+def run_server(args):
+    app = Flask(__name__)
 
-    db_path = sys.argv[1]
-    config_path = sys.argv[2]
-    block_counts = [int(sys.argv[3])] if len(sys.argv) > 3 else [20, 50, 100]
+    @app.route("/new_block", methods=["POST"])
+    def new_block():
+        print("Received new block notification")
+        run_command_line(args)
+        return "Command executed", 200
 
-    with open(config_path, "r") as file:
+    app.run(host="0.0.0.0", port=8088)
+
+
+def run_command_line(args):
+    print("Generating visualization...", args)
+    with open(args.config_path, "r") as file:
         miner_config = toml.load(file)
 
-    for index, last_n_blocks in enumerate(block_counts):
-        commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
-        mark_canonical_blocks(db_path, commits)
+    for index, last_n_blocks in enumerate(args.block_counts):
+        commits, sortition_sats = get_block_commits_with_parents(
+            miner_config.get("db_path"), last_n_blocks
+        )
+        mark_canonical_blocks(miner_config.get("db_path"), commits)
 
-        svg_string = create_graph(commits, sortition_sats)
+        svg_string = create_graph(miner_config, commits, sortition_sats)
 
-        stats = collect_stats(commits)
+        stats = collect_stats(miner_config, commits)
         print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
         print(f"Win %: {stats['win_percentage']:.2%}")
 
@@ -329,3 +324,35 @@ if __name__ == "__main__":
         basename = "index" if index == 0 else f"{last_n_blocks}"
         with open(f"output/{basename}.html", "w") as file:
             file.write(html_content)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Run the script in observer or command-line mode."
+    )
+    parser.add_argument(
+        "--observer", action="store_true", help="Run in observer mode (as a server)"
+    )
+    parser.add_argument(
+        "config_path", nargs="?", help="Path to the miner configuration file"
+    )
+    parser.add_argument(
+        "block_counts",
+        nargs="*",
+        type=int,
+        default=[20, 50, 100],
+        help="List of block counts (optional, defaults to [20, 50, 100])",
+    )
+
+    args = parser.parse_args()
+
+    if args.observer:
+        print("Running in observer mode...")
+        run_server(args)
+    else:
+        if not args.config_path:
+            parser.print_help()
+            sys.exit(1)
+
+        print("Running in command-line mode...")
+        run_command_line(args)
