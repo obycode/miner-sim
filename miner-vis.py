@@ -40,21 +40,32 @@ class Commit:
     def __init__(
         self,
         block_header_hash,
+        txid,
         sender,
         burn_block_height,
         spend,
         sortition_id,
         parent=None,
+        stacks_height=None,
+        won=False,
         canonical=False,
+        tip=False,
+        coinbase_earned=0,
+        fees_earned=0,
     ):
         self.block_header_hash = block_header_hash
+        self.txid = txid
         self.sender = sender[1:-1]  # Remove quotes
         self.burn_block_height = burn_block_height
         self.spend = spend
         self.sortition_id = sortition_id
         self.parent = parent
-        self.children = False  # Initially no children
+        self.stacks_height = stacks_height
+        self.won = won
         self.canonical = canonical
+        self.tip = tip
+        self.coinbase_earned = coinbase_earned
+        self.fees_earned = fees_earned
 
     def __repr__(self):
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
@@ -73,6 +84,7 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
     query = """
     SELECT
         block_header_hash,
+        txid,
         apparent_sender,
         sortition_id,
         vtxindex,
@@ -97,6 +109,7 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
 
     for (
         block_header_hash,
+        txid,
         apparent_sender,
         sortition_id,
         vtxindex,
@@ -111,6 +124,7 @@ def get_block_commits_with_parents(db_file, last_n_blocks=1000):
 
         commits[block_header_hash] = Commit(
             block_header_hash,
+            txid,
             apparent_sender,
             block_height,
             int(burn_fee),
@@ -130,10 +144,30 @@ def mark_canonical_blocks(db_file, commits):
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
 
+    for block_height in sorted(
+        set(commit.burn_block_height for commit in commits.values())
+    ):
+        (winning_block_txid, stacks_height) = cursor.execute(
+            "SELECT winning_block_txid, stacks_block_height FROM snapshots WHERE block_height = ?;",
+            (block_height,),
+        ).fetchone()
+        for commit in filter(
+            lambda x: x.burn_block_height == block_height, commits.values()
+        ):
+            if winning_block_txid == commit.txid:
+                commit.won = True
+                commit.stacks_height = stacks_height
+            else:
+                if commit.parent and commit.parent in commits:
+                    parent_commit = commits[commit.parent]
+                    commit.stacks_height = parent_commit.stacks_height + 1
+
+    # Mark the canonical chain
     tip = cursor.execute(
         "SELECT canonical_stacks_tip_hash FROM snapshots ORDER BY block_height DESC LIMIT 1;"
     ).fetchone()[0]
 
+    commits[tip].tip = True
     while tip:
         commits[tip].canonical = True
         tip = commits[tip].parent
@@ -154,7 +188,10 @@ def create_graph(miner_config, commits, sortition_sats):
             for commit in filter(
                 lambda x: x.burn_block_height == block_height, commits.values()
             ):
-                node_label = f"{get_miner_name(miner_config, commit.sender)}\n{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})"
+                node_label = f"""{get_miner_name(miner_config, commit.sender)}
+{round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})
+Stacks Height: {commit.stacks_height}
+"""
 
                 if is_miner_tracked(miner_config, commit.sender):
                     tracked_spend += commit.spend
@@ -165,9 +202,9 @@ def create_graph(miner_config, commits, sortition_sats):
 
                 # Initialize the node attributes dictionary
                 node_attrs = {
-                    "color": "blue" if commit.children else "black",
+                    "color": "blue" if commit.won else "black",
                     "fillcolor": get_miner_color(miner_config, commit.sender),
-                    "penwidth": "4" if commit.children else "1",
+                    "penwidth": "8" if commit.tip else "4" if commit.won else "1",
                     "style": "filled,solid",
                 }
 
@@ -215,7 +252,7 @@ def collect_stats(miner_config, commits):
             tracked_commits_per_block[commit.burn_block_height].append(commit.spend)
 
             # Count the number of wins
-            if commit.children:
+            if commit.won:
                 wins += 1
 
     if len(tracked_commits_per_block) == 0:
