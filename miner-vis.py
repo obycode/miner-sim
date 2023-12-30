@@ -275,6 +275,13 @@ def generate_html(n_blocks, svg_content, stats):
         </style>
     </head>
     <body>
+        <nav>
+            <ul style="list-style-type: none; padding: 0;">
+                <li style="display: inline; margin-right: 20px;"><a href="/">Home</a></li>
+                <li style="display: inline; margin-right: 20px;"><a href="/50.html">50 Blocks</a></li>
+                <li style="display: inline;"><a href="/100.html">100 Blocks</a></li>
+            </ul>
+        </nav>
         <p>This page was last updated at: {current_time}<br>Note: Data refreshes every minute. Refresh the page for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
@@ -293,29 +300,32 @@ def generate_html(n_blocks, svg_content, stats):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
+    if len(sys.argv) < 3:
         print(
-            "Usage: python script.py <path_to_database> <miner_config_file> <last_n_blocks>"
+            "Usage: python script.py <path_to_database> <miner_config_file> <optional last_n_blocks>"
         )
         sys.exit(1)
 
     db_path = sys.argv[1]
     config_path = sys.argv[2]
-    last_n_blocks = int(sys.argv[3])
+    block_counts = [int(sys.argv[3])] if len(sys.argv) > 3 else [20, 50, 100]
 
     with open(config_path, "r") as file:
         miner_config = toml.load(file)
 
-    commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
-    mark_canonical_blocks(db_path, commits)
+    for index, last_n_blocks in enumerate(block_counts):
+        commits, sortition_sats = get_block_commits_with_parents(db_path, last_n_blocks)
+        mark_canonical_blocks(db_path, commits)
 
-    svg_string = create_graph(commits, sortition_sats)
+        svg_string = create_graph(commits, sortition_sats)
 
-    stats = collect_stats(commits)
-    print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
-    print(f"Win %: {stats['win_percentage']:.2%}")
+        stats = collect_stats(commits)
+        print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
+        print(f"Win %: {stats['win_percentage']:.2%}")
 
-    # Generate and save HTML content
-    html_content = generate_html(last_n_blocks, svg_string, stats)
-    with open("output/index.html", "w") as file:
-        file.write(html_content)
+        # Generate and save HTML content
+        html_content = generate_html(last_n_blocks, svg_string, stats)
+
+        basename = "index" if index == 0 else f"{last_n_blocks}"
+        with open(f"output/{basename}.html", "w") as file:
+            file.write(html_content)
