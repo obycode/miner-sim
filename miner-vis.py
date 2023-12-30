@@ -233,7 +233,6 @@ Height: {commit.stacks_height}
                 # Additional modifications based on conditions
                 if not commit.canonical:
                     node_attrs["style"] = "filled,dashed"
-                    node_attrs["penwidth"] = "1"
 
                 # Check if the commit spent more than the alert_sats threshold
                 if commit.spend > miner_config.get("alert_sats", 1000000):
