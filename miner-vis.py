@@ -325,6 +325,9 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
                     if commits[commit.parent].burn_block_height != last_height:
                         color = "red"
                         penwidth = "4"
+                    if commit.canonical:
+                        color = "blue"
+                        penwidth = "8"
                     c.edge(
                         commit.parent,
                         commit.block_header_hash,
