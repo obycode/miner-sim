@@ -76,6 +76,17 @@ class Commit:
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
 
 
+class Miner:
+    def __init__(self, address, name, color, tracked):
+        self.address = address
+        self.name = name
+        self.color = color
+        self.tracked = tracked
+
+    def __repr__(self):
+        return f"Miner({self.identifier}, {self.name}, {self.color}, {self.track})"
+
+
 def get_block_commits_with_parents(db_path, last_n_blocks=1000):
     conn = sqlite3.connect(os.path.join(db_path, sortition_db))
     cursor = conn.cursor()
@@ -174,7 +185,12 @@ def mark_canonical_blocks(db_path, commits):
                 ).fetchone()
 
                 if result:
-                    block_hash, coinbase, tx_fees_anchored, tx_fees_streamed = result
+                    (
+                        block_hash,
+                        coinbase,
+                        tx_fees_anchored,
+                        tx_fees_streamed,
+                    ) = result
                 else:
                     # Handle the case where no matching record is found
                     coinbase = tx_fees_anchored = tx_fees_streamed = 0
@@ -273,6 +289,7 @@ Height: {commit.stacks_height}
 
 def collect_stats(miner_config, commits):
     tracked_commits_per_block = {}
+    miners = {}
     wins = 0
     canonical = 0
     coinbase_earned = 0
@@ -297,11 +314,24 @@ def collect_stats(miner_config, commits):
                 coinbase_earned += commit.coinbase_earned
                 fees_earned += commit.fees_earned
 
+        if commit.sender not in miners:
+            miners[commit.sender] = Miner(
+                commit.sender,
+                get_miner_name(miner_config, commit.sender),
+                get_miner_color(miner_config, commit.sender),
+                is_miner_tracked(miner_config, commit.sender),
+            )
+
     if len(tracked_commits_per_block) == 0:
         print("No tracked commits found")
         return {
+            "total_spend": 0,
+            "total_coinbase_earned": 0,
+            "total_fees_earned": 0,
             "avg_spend_per_block": 0,
             "win_percentage": 0,
+            "canonical_percentage": 0,
+            "miners": miners,
         }
 
     # Print stats
@@ -316,6 +346,7 @@ def collect_stats(miner_config, commits):
         "avg_spend_per_block": round(spend / len(tracked_commits_per_block)),
         "win_percentage": wins / len(tracked_commits_per_block),
         "canonical_percentage": canonical / len(tracked_commits_per_block),
+        "miners": miners,
     }
 
 
@@ -325,6 +356,28 @@ def generate_html(n_blocks, svg_content, stats):
     # Use regex to replace width and height attributes in the SVG
     svg_content = re.sub(r'width="\d+pt"', 'width="100%"', svg_content)
     svg_content = re.sub(r'height="\d+pt"', 'height="100%"', svg_content)
+
+    # Compute the price ratio (if applicable)
+    if (stats["total_coinbase_earned"] + stats["total_fees_earned"]) != 0:
+        price_ratio = stats["total_spend"] / (
+            (stats["total_coinbase_earned"] + stats["total_fees_earned"]) / 1000000.0
+        )
+        price_ratio_str = f"{price_ratio:.2f} Sats/STX"
+    else:
+        # Handle the division by zero case
+        price_ratio_str = "N/A"
+
+    miner_rows = "".join(
+        f"""
+            <tr>
+                <td>{miner.name}</td>
+                <td>{miner.address}</td>
+                <td><span class="color-sample" style="background-color: {miner.color};"></span>{miner.color}</td>
+                <td class="center-text">{"✅" if miner.tracked else ""}</td>
+            </tr>
+            """
+        for miner in stats["miners"].values()
+    )
 
     html_content = f"""
     <!DOCTYPE html>
@@ -344,6 +397,17 @@ def generate_html(n_blocks, svg_content, stats):
             th, td {{
                 padding: 5px;
                 text-align: left;
+            }}
+            .color-sample {{
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                border: 2px solid black;
+                display: inline-block;
+                margin-right: 5px;
+            }}
+            .center-text {{
+                text-align: center;
             }}
         </style>
     </head>
@@ -366,12 +430,22 @@ def generate_html(n_blocks, svg_content, stats):
             <tr><th>Average Spend per Block</th><td>{stats['avg_spend_per_block']:,}</td></tr>
             <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
             <tr><th>Canonical Percentage</th><td>{stats['canonical_percentage']:.2%}</td></tr>
-            <tr><th>Price Ratio</th><td>{stats['total_spend']/((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):.2f} Sats/STX</td></tr>
+            <tr><th>Price Ratio</th><td>{price_ratio_str} Sats/STX</td></tr>
         </table>
         <h2>Block Commits</h2>
         <div class="responsive-svg">
             {svg_content}
         </div>
+        <h2>Legend</h2>
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Address</th>
+                <th>Color</th>
+                <th>Tracked?</th>
+            </tr>
+            {miner_rows}
+        </table>
     </body>
     </html>
     """
