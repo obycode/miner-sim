@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -11,8 +12,16 @@ import toml
 from flask import Flask, request, abort, send_from_directory
 
 sortition_db = "mainnet/burnchain/sortition/marf.sqlite"
-payments_db = "mainnet/chainstate/vm/index.sqlite"
+chainstate_db = "mainnet/chainstate/vm/index.sqlite"
 default_color = "white"
+cost_limits = {
+    "write_length": 15_000_000,
+    "write_count": 15_000,
+    "read_length": 100_000_000,
+    "read_count": 15_000,
+    "runtime": 5_000_000_000,
+    "size": 2 * 1024 * 1024,
+}
 
 
 def is_miner_tracked(miner_config, identifier):
@@ -56,6 +65,12 @@ class Commit:
         tip=False,
         coinbase_earned=0,
         fees_earned=0,
+        read_length=0,
+        read_count=0,
+        write_length=0,
+        write_count=0,
+        runtime=0,
+        block_size=0,
     ):
         self.block_header_hash = block_header_hash
         self.txid = txid
@@ -71,9 +86,26 @@ class Commit:
         self.tip = tip
         self.coinbase_earned = coinbase_earned
         self.fees_earned = fees_earned
+        self.read_length = read_length
+        self.read_count = read_count
+        self.write_length = write_length
+        self.write_count = write_count
+        self.runtime = runtime
+        self.block_size = block_size
 
     def __repr__(self):
         return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
+
+    def get_fullness(self):
+        fullness = max(
+            self.read_length / cost_limits["read_length"],
+            self.read_count / cost_limits["read_count"],
+            self.write_length / cost_limits["write_length"],
+            self.write_count / cost_limits["write_count"],
+            self.runtime / cost_limits["runtime"],
+            self.block_size / cost_limits["size"],
+        )
+        return round(fullness * 100, 2)
 
 
 class Miner:
@@ -176,10 +208,10 @@ def mark_canonical_blocks(db_path, commits):
                 commit.stacks_height = stacks_height
 
                 # Fetch the coinbase and fees earned
-                payments_conn = sqlite3.connect(os.path.join(db_path, payments_db))
-                payments_cursor = payments_conn.cursor()
+                chainstate_conn = sqlite3.connect(os.path.join(db_path, chainstate_db))
+                chainstate_cursor = chainstate_conn.cursor()
                 # Execute the query
-                result = payments_cursor.execute(
+                result = chainstate_cursor.execute(
                     "SELECT block_hash, coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
                     (consensus_hash,),
                 ).fetchone()
@@ -191,14 +223,27 @@ def mark_canonical_blocks(db_path, commits):
                         tx_fees_anchored,
                         tx_fees_streamed,
                     ) = result
-                else:
-                    # Handle the case where no matching record is found
-                    coinbase = tx_fees_anchored = tx_fees_streamed = 0
-                    block_hash = None
+                    commit.block_hash = block_hash
+                    commit.coinbase_earned = int(coinbase)
+                    commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
 
-                commit.block_hash = block_hash
-                commit.coinbase_earned = int(coinbase)
-                commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
+                # Fetch the block costs and size
+                result = chainstate_cursor.execute(
+                    "SELECT cost, block_size FROM block_headers WHERE block_hash = ?;",
+                    (block_hash,),
+                ).fetchone()
+                if result:
+                    cost_string, block_size = result
+                    costs = json.loads(cost_string)
+                    commit.read_length = int(costs["read_length"])
+                    commit.read_count = int(costs["read_count"])
+                    commit.write_length = int(costs["write_length"])
+                    commit.write_count = int(costs["write_count"])
+                    commit.runtime = int(costs["runtime"])
+                    commit.block_size = int(block_size)
+
+                chainstate_conn.close()
+
             else:
                 if commit.parent and commit.parent in commits:
                     parent_commit = commits[commit.parent]
@@ -233,13 +278,16 @@ def create_graph(miner_config, commits, sortition_sats):
                 node_label = f"""{get_miner_name(miner_config, commit.sender)}
 {round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})
 Height: {commit.stacks_height}
+{commit.get_fullness()}% full
 """
 
                 if is_miner_tracked(miner_config, commit.sender):
                     tracked_spend += commit.spend
 
                 c.attr(
-                    label=f"Burn Block Height: {commit.burn_block_height}\nTotal Spend: {sortition_sats[commit.sortition_id]:,}\nTracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"
+                    label=f"""Burn Block Height: {commit.burn_block_height}
+Total Spend: {sortition_sats[commit.sortition_id]:,}
+Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition_id]:.2%})"""
                 )
 
                 # Initialize the node attributes dictionary
