@@ -277,9 +277,9 @@ def create_graph(miner_config, commits, sortition_sats):
             ):
                 node_label = f"""{get_miner_name(miner_config, commit.sender)}
 {round(commit.spend/1000.0):,}K ({commit.spend/sortition_sats[commit.sortition_id]:.0%})
-Height: {commit.stacks_height}
-{commit.get_fullness()}% full
-"""
+Height: {commit.stacks_height}"""
+                if commit.won:
+                    node_label += f"\n{commit.get_fullness()}% full"
 
                 if is_miner_tracked(miner_config, commit.sender):
                     tracked_spend += commit.spend
