@@ -281,7 +281,9 @@ Height: {commit.stacks_height}"""
                 if commit.won:
                     node_label += f"\n{commit.get_fullness()}% full"
 
-                if is_miner_tracked(miner_config, commit.sender):
+                if miner_config.get("track_all", False) or is_miner_tracked(
+                    miner_config, commit.sender
+                ):
                     tracked_spend += commit.spend
 
                 c.attr(
@@ -342,8 +344,18 @@ def collect_stats(miner_config, commits):
     canonical = 0
     coinbase_earned = 0
     fees_earned = 0
+    orphans = 0
+    total_blocks = 0
     for commit in commits.values():
-        if is_miner_tracked(miner_config, commit.sender):
+        # Track the overall orphan rate
+        if commit.won:
+            total_blocks += 1
+            if not commit.canonical:
+                orphans += 1
+
+        if miner_config.get("track_all", False) or is_miner_tracked(
+            miner_config, commit.sender
+        ):
             # Keep an array of all tracked commits per block
             tracked_commits_per_block[
                 commit.burn_block_height
@@ -380,6 +392,7 @@ def collect_stats(miner_config, commits):
             "win_percentage": 0,
             "canonical_percentage": 0,
             "miners": miners,
+            "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
         }
 
     # Print stats
@@ -395,6 +408,7 @@ def collect_stats(miner_config, commits):
         "win_percentage": wins / len(tracked_commits_per_block),
         "canonical_percentage": canonical / len(tracked_commits_per_block),
         "miners": miners,
+        "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
     }
 
 
@@ -479,6 +493,7 @@ def generate_html(n_blocks, svg_content, stats):
             <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
             <tr><th>Canonical Percentage</th><td>{stats['canonical_percentage']:.2%}</td></tr>
             <tr><th>Price Ratio</th><td>{price_ratio_str} Sats/STX</td></tr>
+            <tr><th>Network Orphan Rate</th><td>{stats['orphan_rate']:.2%}</td></tr>
         </table>
         <h2>Block Commits</h2>
         <div class="responsive-svg">
@@ -555,6 +570,7 @@ def run_command_line(args):
             )
         else:
             print("Price ratio: N/A")
+        print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
 
         # Generate and save HTML content
         html_content = generate_html(last_n_blocks, svg_string, stats)
