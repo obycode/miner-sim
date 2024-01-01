@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import requests
 import os
 import sqlite3
 import sys
@@ -22,6 +23,11 @@ cost_limits = {
     "runtime": 5_000_000_000,
     "size": 2 * 1024 * 1024,
 }
+
+
+def is_miner_known(miner_config, identifier):
+    # Check if the miner is in the config
+    return identifier in miner_config.get("miners", {})
 
 
 def is_miner_tracked(miner_config, identifier):
@@ -109,11 +115,12 @@ class Commit:
 
 
 class Miner:
-    def __init__(self, address, name, color, tracked):
+    def __init__(self, address, name, color, tracked, known):
         self.address = address
         self.name = name
         self.color = color
         self.tracked = tracked
+        self.known = known
 
     def __repr__(self):
         return f"Miner({self.identifier}, {self.name}, {self.color}, {self.track})"
@@ -383,6 +390,7 @@ def collect_stats(miner_config, commits):
                 get_miner_name(miner_config, commit.sender),
                 get_miner_color(miner_config, commit.sender),
                 is_miner_tracked(miner_config, commit.sender),
+                is_miner_known(miner_config, commit.sender),
             )
 
     if len(tracked_commits_per_block) == 0:
@@ -518,6 +526,40 @@ def generate_html(n_blocks, svg_content, stats):
     return html_content
 
 
+def send_new_miner_alerts(miner_config, stats):
+    webhook = miner_config.get("alert_webhook")
+    if not webhook:
+        return
+
+    # Send an alert if there are any new miners
+    new_miners = list(filter(lambda x: not x.known, stats["miners"].values()))
+    if len(new_miners) == 0:
+        return
+
+    data_to_send = {"new_miners": list(map(lambda x: x.address, new_miners))}
+    json_data = json.dumps(data_to_send)
+
+    response = requests.post(
+        webhook, data=json_data, headers={"Content-Type": "application/json"}
+    )
+
+    # Check if the POST request was successful
+    if response.status_code != 200:
+        print(
+            f"Failed to send miner alert. Status code: {response.status_code}, Response: {response.text}"
+        )
+
+    # Update the config file with the new miners, so that we don't send alerts again
+    for miner in new_miners:
+        miner_config["miners"][miner.address] = {
+            "name": miner.name,
+            "color": miner.color,
+            "track": False,
+        }
+    with open(args.config_path, "w") as file:
+        toml.dump(miner_config, file)
+
+
 def run_server(args):
     app = Flask(__name__, static_folder="output", static_url_path="")
 
@@ -556,6 +598,9 @@ def run_command_line(args):
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
         stats = collect_stats(miner_config, commits)
+
+        send_new_miner_alerts(miner_config, stats)
+
         print(f"Total spend: {stats['total_spend']:,} Sats")
         print(
             f"Total coinbase earned: {(stats['total_coinbase_earned']/1000000.0):,} STX"
