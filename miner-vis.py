@@ -567,8 +567,8 @@ def generate_html(n_blocks, svg_content, stats):
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Network Stats</h2>
         <ul>
-            <li><b>Ready transactions:</b> {stats['mempool']['ready_tx_count']}</li>
-            <li><b>Pending transactions:</b> {stats['mempool']['pending_tx_count']}</li>
+            <!-- <li><b>Ready transactions:</b> {stats['mempool']['ready_tx_count']}</li>
+            <li><b>Pending transactions:</b> {stats['mempool']['pending_tx_count']}</li> -->
             <li><b>Network orphan rate:</b> {stats['orphan_rate']:.2%}</li>
         </ul>
         <h2>Miner Stats</h2>
@@ -759,8 +759,8 @@ def run_command_line(args):
         send_new_miner_alerts(miner_config, stats)
         send_spend_alerts(miner_config, stats)
 
-        print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
-        print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
+        # print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
+        # print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
         print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
         for group, group_stats in stats["group_stats"].items():
             print(f"Group: {group}")
