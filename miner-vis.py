@@ -469,18 +469,18 @@ def generate_html(n_blocks, svg_content, stats):
 
     # Rows for each stat
     stat_names = [
-        "spend",
-        "coinbase_earned",
-        "fees_earned",
-        "total_earned",
-        "avg_spend_per_block",
-        "win_percentage",
-        "canonical_percentage",
-        "price_ratio",
-        "orphan_rate",
+        ("spend", "Total spend"),
+        ("coinbase_earned", "Total Coinbase earned"),
+        ("fees_earned", "Total Fees earned"),
+        ("total_earned", "Total earned"),
+        ("avg_spend_per_block", "Avg spend per block"),
+        ("win_percentage", "Win %"),
+        ("canonical_percentage", "Canonical %"),
+        ("price_ratio", "Price ratio"),
+        ("orphan_rate", "Orphan rate"),
     ]
-    for stat_name in stat_names:
-        table_str += f"<tr><th>{stat_name}</th>"
+    for stat_name, stat_label in stat_names:
+        table_str += f"<tr><th>{stat_label}</th>"
         for group in group_stats.values():
             if stat_name == "price_ratio":
                 value = f"{group[stat_name]:.2f} Sats/STX"
@@ -488,6 +488,8 @@ def generate_html(n_blocks, svg_content, stats):
                 value = f"{group[stat_name]:.2%}"
             elif stat_name in ["coinbase_earned", "fees_earned", "total_earned"]:
                 value = f"{(group[stat_name] / 1000000.0):,} STX"
+            elif stat_name in ["spend", "avg_spend_per_block"]:
+                value = f"{group[stat_name]:,} Sats"
             else:
                 value = f"{group[stat_name]:,}"
             table_str += f"<td>{value}</td>"
