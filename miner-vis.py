@@ -564,6 +564,7 @@ def generate_html(n_blocks, svg_content, stats):
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
         {table_str}
+        <p><b>Network orphan rate:</b> {stats['orphan_rate']:.2%}</p>
         <h2>Block Commits</h2>
         <div class="responsive-svg">
             {svg_content}
