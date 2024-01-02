@@ -3,6 +3,7 @@
 import argparse
 import copy
 import json
+from threading import Lock
 import requests
 import os
 import sqlite3
@@ -664,6 +665,7 @@ def send_spend_alerts(miner_config, stats):
 
 def run_server(args):
     app = Flask(__name__, static_folder="output", static_url_path="")
+    lock = Lock()
 
     @app.route("/new_block", methods=["POST"])
     def new_block():
@@ -672,8 +674,17 @@ def run_server(args):
             abort(403)  # Forbidden access
 
         print("Received new block notification")
-        run_command_line(args)
-        return "Graphs rebuilt", 200
+
+        # Acquire the lock before running the command line operation
+        if lock.acquire(blocking=False):
+            try:
+                run_command_line(args)
+                print("Graphs rebuilt")
+            finally:
+                lock.release()  # Ensure the lock is released
+            return "Graphs rebuilt", 200
+        else:
+            return "Another operation is currently in progress", 429
 
     @app.route("/")
     def index():
