@@ -391,9 +391,11 @@ def compute_stats(stats, num_blocks):
         "orphan_rate": (stats["wins"] - stats["canonical"]) / stats["wins"]
         if stats["wins"] > 0
         else 0,
-        "price_ratio": stats["spend"] / (total_earned / 1000000.0)
+        "price_ratio": f"{stats['spend'] / (total_earned / 1000000.0):.2f}"
         if total_earned > 0
-        else 0,
+        else "0"
+        if stats["spend"] == 0
+        else "∞",
         "total_earned": total_earned,
     }
 
@@ -492,7 +494,7 @@ def generate_html(n_blocks, svg_content, stats):
         table_str += f"<tr><th>{stat_label}</th>"
         for group in group_stats.values():
             if stat_name == "price_ratio":
-                value = f"{group[stat_name]:.2f} Sats/STX"
+                value = f"{group[stat_name]} Sats/STX"
             elif stat_name in ["win_percentage", "canonical_percentage", "orphan_rate"]:
                 value = f"{group[stat_name]:.2%}"
             elif stat_name in ["coinbase_earned", "fees_earned", "total_earned"]:
@@ -733,7 +735,7 @@ def run_command_line(args):
             print(f"  Win %: {group_stats['win_percentage']:.2%}")
             print(f"  Canonical %: {group_stats['canonical_percentage']:.2%}")
             print(f"  Orphan rate: {group_stats['orphan_rate']:.2%}")
-            print(f"  Price ratio: {group_stats['price_ratio']:.2f} Sats/STX")
+            print(f"  Price ratio: {group_stats['price_ratio']} Sats/STX")
 
         # Generate and save HTML content
         html_content = generate_html(last_n_blocks, svg_string, stats)
