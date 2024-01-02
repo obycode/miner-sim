@@ -406,7 +406,6 @@ def collect_stats(miner_config, commits):
 
         # Track the stats per group
         group = get_miner_group(miner_config, commit.sender)
-        print("group: ", group)
         stats = group_stats.get(group, zero_stats.copy())
 
         stats["commits"] += 1
@@ -439,7 +438,6 @@ def collect_stats(miner_config, commits):
             )
 
         group_stats[group] = stats
-        print(f"group_stats[{group}]: ", group_stats[group])
 
     computed_stats = {
         key: compute_stats(value, len(blocks)) for key, value in group_stats.items()
@@ -647,7 +645,6 @@ def run_command_line(args):
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
         stats = collect_stats(miner_config, commits)
-        print(stats)
 
         send_new_miner_alerts(miner_config, stats)
 
