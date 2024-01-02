@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import json
 import requests
 import os
@@ -329,8 +330,8 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
                 if not commit.canonical:
                     node_attrs["style"] = "filled,dashed"
 
-                # Check if the commit spent more than the alert_sats threshold
-                if commit.spend > miner_config.get("alert_sats", 1000000):
+                # Check if the commit spent more than the highlight_sats threshold
+                if commit.spend >= miner_config.get("highlight_sats", 1000000):
                     node_attrs["fontcolor"] = "red"
                     node_attrs["fontname"] = "bold"
 
@@ -372,6 +373,7 @@ zero_stats = {
     "spend": 0,
     "coinbase_earned": 0,
     "fees_earned": 0,
+    "spend_by_block": {},
 }
 
 
@@ -379,6 +381,7 @@ def compute_stats(stats, num_blocks):
     total_earned = stats["coinbase_earned"] + stats["fees_earned"]
     return {
         "spend": stats["spend"],
+        "spend_by_block": stats["spend_by_block"],
         "coinbase_earned": stats["coinbase_earned"],
         "fees_earned": stats["fees_earned"],
         "avg_spend_per_block": round(stats["spend"] / num_blocks),
@@ -406,11 +409,16 @@ def collect_stats(miner_config, commits):
 
         # Track the stats per group
         group = get_miner_group(miner_config, commit.sender)
-        stats = group_stats.get(group, zero_stats.copy())
+        stats = group_stats.get(group, copy.deepcopy(zero_stats))
 
         stats["commits"] += 1
         # TODO: Find the Bitcoin fee paid and track it here too
         stats["spend"] += commit.spend
+
+        # Track the total spend by the group for each block
+        stats["spend_by_block"][commit.burn_block_height] = (
+            stats["spend_by_block"].get(commit.burn_block_height, 0) + commit.spend
+        )
 
         if commit.won:
             # Track the overall orphan rate
@@ -586,7 +594,10 @@ def send_new_miner_alerts(miner_config, stats):
     if len(new_miners) == 0:
         return
 
-    data_to_send = {"new_miners": list(map(lambda x: x.address, new_miners))}
+    data_to_send = {
+        "type": "new_miners",
+        "new_miners": list(map(lambda x: x.address, new_miners)),
+    }
     json_data = json.dumps(data_to_send)
 
     response = requests.post(
@@ -607,6 +618,48 @@ def send_new_miner_alerts(miner_config, stats):
         }
     with open(args.config_path, "w") as file:
         toml.dump(miner_config, file)
+
+
+def send_spend_alerts(miner_config, stats):
+    webhook = miner_config.get("alert_webhook")
+    alert_group_spend_sats = miner_config.get("alert_group_spend_sats")
+    if not webhook or not alert_group_spend_sats:
+        return
+
+    start_block = miner_config.get("last_alert_block", 0)
+    for group, group_stats in stats.get("group_stats").items():
+        for block_height, spend in group_stats.get("spend_by_block").items():
+            if block_height <= start_block:
+                continue
+
+            if spend > alert_group_spend_sats:
+                data_to_send = {
+                    "type": "spend",
+                    "group": group,
+                    "block_height": block_height,
+                    "spend": spend,
+                }
+                json_data = json.dumps(data_to_send)
+
+                print(
+                    f"Sending spend alert for block {block_height}: group {group} spent {spend:,} Sats"
+                )
+                response = requests.post(
+                    webhook,
+                    data=json_data,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                # Check if the POST request was successful
+                if response.status_code != 200:
+                    print(
+                        f"Failed to send spend alert. Status code: {response.status_code}, Response: {response.text}"
+                    )
+
+            # Update the config file with the last alert block to avoid repeat alerts
+            miner_config["last_alert_block"] = block_height
+            with open(args.config_path, "w") as file:
+                toml.dump(miner_config, file)
 
 
 def run_server(args):
@@ -649,6 +702,7 @@ def run_command_line(args):
         stats = collect_stats(miner_config, commits)
 
         send_new_miner_alerts(miner_config, stats)
+        send_spend_alerts(miner_config, stats)
 
         print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
         for group, group_stats in stats["group_stats"].items():
