@@ -31,9 +31,13 @@ def is_miner_known(miner_config, identifier):
 
 
 def is_miner_tracked(miner_config, identifier):
-    # Check if the miner is in the config and is tracked
+    # Check if the miner is in tracked group
+    tracked_group = miner_config.get("tracked_group", None)
+    if not tracked_group:
+        return False
+
     miner_info = miner_config.get("miners", {}).get(identifier)
-    if miner_info and miner_info.get("track", False):
+    if miner_info and miner_info.get("group", None) == tracked_group:
         return True
     return False
 
@@ -41,9 +45,14 @@ def is_miner_tracked(miner_config, identifier):
 def get_miner_color(miner_config, identifier):
     # Retrieve the color for the given miner identifier
     miner_info = miner_config.get("miners", {}).get(identifier)
-    if miner_info:
-        return miner_info.get("color", default_color)
-    return default_color
+    if not miner_info or not miner_info.get("group", None):
+        return default_color
+
+    group = miner_config.get("groups", {}).get(miner_info.get("group"), None)
+    if not group:
+        return default_color
+
+    return group.get("color", default_color)
 
 
 def get_miner_name(miner_config, identifier):
@@ -52,6 +61,14 @@ def get_miner_name(miner_config, identifier):
     if miner_info:
         return miner_info.get("name", identifier[0:8])
     return identifier[0:8]
+
+
+def get_miner_group(miner_config, identifier):
+    # Retrieve the name for the given miner identifier
+    miner_info = miner_config.get("miners", {}).get(identifier)
+    if miner_info:
+        return miner_info.get("group", "Other")
+    return "Other"
 
 
 class Commit:
@@ -115,15 +132,16 @@ class Commit:
 
 
 class Miner:
-    def __init__(self, address, name, color, tracked, known):
+    def __init__(self, address, name, group, color, tracked, known):
         self.address = address
         self.name = name
+        self.group = group
         self.color = color
         self.tracked = tracked
         self.known = known
 
     def __repr__(self):
-        return f"Miner({self.identifier}, {self.name}, {self.color}, {self.track})"
+        return f"Miner({self.address}, {self.name}, {self.group})"
 
 
 def get_block_commits_with_parents(db_path, last_n_blocks=1000):
@@ -347,77 +365,87 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
     return dot.pipe(format="svg").decode("utf-8")
 
 
+zero_stats = {
+    "commits": 0,
+    "wins": 0,
+    "canonical": 0,
+    "spend": 0,
+    "coinbase_earned": 0,
+    "fees_earned": 0,
+}
+
+
+def compute_stats(stats, num_blocks):
+    total_earned = stats["coinbase_earned"] + stats["fees_earned"]
+    return {
+        "spend": stats["spend"],
+        "coinbase_earned": stats["coinbase_earned"],
+        "fees_earned": stats["fees_earned"],
+        "avg_spend_per_block": round(stats["spend"] / num_blocks),
+        "win_percentage": stats["wins"] / num_blocks,
+        "canonical_percentage": stats["canonical"] / num_blocks,
+        "orphan_rate": (stats["wins"] - stats["canonical"]) / stats["wins"]
+        if stats["wins"] > 0
+        else 0,
+        "price_ratio": stats["spend"] / (total_earned / 1000000.0)
+        if total_earned > 0
+        else 0,
+        "total_earned": total_earned,
+    }
+
+
 def collect_stats(miner_config, commits):
-    tracked_commits_per_block = {}
-    miners = {}
-    wins = 0
-    canonical = 0
-    coinbase_earned = 0
-    fees_earned = 0
+    group_stats = {}
+    blocks = set()
     orphans = 0
     total_blocks = 0
+    miners = {}
     for commit in commits.values():
-        # Track the overall orphan rate
+        # Track the blocks
+        blocks.add(commit.burn_block_height)
+
+        # Track the stats per group
+        group = get_miner_group(miner_config, commit.sender)
+        print("group: ", group)
+        stats = group_stats.get(group, zero_stats.copy())
+
+        stats["commits"] += 1
+        # TODO: Find the Bitcoin fee paid and track it here too
+        stats["spend"] += commit.spend
+
         if commit.won:
+            # Track the overall orphan rate
             total_blocks += 1
             if not commit.canonical:
                 orphans += 1
 
-        if miner_config.get("track_all", False) or is_miner_tracked(
-            miner_config, commit.sender
-        ):
-            # Keep an array of all tracked commits per block
-            tracked_commits_per_block[
-                commit.burn_block_height
-            ] = tracked_commits_per_block.get(commit.burn_block_height, [])
-            tracked_commits_per_block[commit.burn_block_height].append(commit.spend)
+            stats["wins"] += 1
 
-            # Count the number of wins
-            if commit.won:
-                wins += 1
-
-            # Count the number of canonical blocks
             if commit.canonical:
-                canonical += 1
+                stats["canonical"] += 1
 
-                # Sum the coinbase and fees earned
-                coinbase_earned += commit.coinbase_earned
-                fees_earned += commit.fees_earned
+                stats["coinbase_earned"] += commit.coinbase_earned
+                stats["fees_earned"] += commit.fees_earned
 
+        # Keep track of all miners
         if commit.sender not in miners:
             miners[commit.sender] = Miner(
                 commit.sender,
                 get_miner_name(miner_config, commit.sender),
+                group,
                 get_miner_color(miner_config, commit.sender),
                 is_miner_tracked(miner_config, commit.sender),
                 is_miner_known(miner_config, commit.sender),
             )
 
-    if len(tracked_commits_per_block) == 0:
-        print("No tracked commits found")
-        return {
-            "total_spend": 0,
-            "total_coinbase_earned": 0,
-            "total_fees_earned": 0,
-            "avg_spend_per_block": 0,
-            "win_percentage": 0,
-            "canonical_percentage": 0,
-            "miners": miners,
-            "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
-        }
+        group_stats[group] = stats
+        print(f"group_stats[{group}]: ", group_stats[group])
 
-    # Print stats
-    spend = 0
-    for spends in tracked_commits_per_block.values():
-        spend += sum(spends)
-
+    computed_stats = {
+        key: compute_stats(value, len(blocks)) for key, value in group_stats.items()
+    }
     return {
-        "total_spend": spend,
-        "total_coinbase_earned": coinbase_earned,
-        "total_fees_earned": fees_earned,
-        "avg_spend_per_block": round(spend / len(tracked_commits_per_block)),
-        "win_percentage": wins / len(tracked_commits_per_block),
-        "canonical_percentage": canonical / len(tracked_commits_per_block),
+        "group_stats": computed_stats,
         "miners": miners,
         "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
     }
@@ -430,21 +458,52 @@ def generate_html(n_blocks, svg_content, stats):
     svg_content = re.sub(r'width="\d+pt"', 'width="100%"', svg_content)
     svg_content = re.sub(r'height="\d+pt"', 'height="100%"', svg_content)
 
-    # Compute the price ratio (if applicable)
-    if (stats["total_coinbase_earned"] + stats["total_fees_earned"]) != 0:
-        price_ratio = stats["total_spend"] / (
-            (stats["total_coinbase_earned"] + stats["total_fees_earned"]) / 1000000.0
-        )
-        price_ratio_str = f"{price_ratio:.2f} Sats/STX"
-    else:
-        # Handle the division by zero case
-        price_ratio_str = "N/A"
+    group_stats = stats["group_stats"]
+
+    # Build the stats table
+    table_str = "<table>"
+
+    # Header row with group names
+    table_str += "<tr><th>Stat Name</th>"
+    for group_name in group_stats.keys():
+        table_str += f"<th>{group_name}</th>"
+    table_str += "</tr>"
+
+    # Rows for each stat
+    stat_names = [
+        "spend",
+        "coinbase_earned",
+        "fees_earned",
+        "total_earned",
+        "avg_spend_per_block",
+        "win_percentage",
+        "canonical_percentage",
+        "price_ratio",
+        "orphan_rate",
+    ]
+    for stat_name in stat_names:
+        table_str += f"<tr><th>{stat_name}</th>"
+        for group in group_stats.values():
+            if stat_name == "price_ratio":
+                value = f"{group[stat_name]:.2f} Sats/STX"
+            elif stat_name in ["win_percentage", "canonical_percentage", "orphan_rate"]:
+                value = f"{group[stat_name]:.2%}"
+            elif stat_name in ["coinbase_earned", "fees_earned", "total_earned"]:
+                value = f"{(group[stat_name] / 1000000.0):,} STX"
+            else:
+                value = f"{group[stat_name]:,}"
+            table_str += f"<td>{value}</td>"
+        table_str += "</tr>"
+
+    # End of the table
+    table_str += "</table>"
 
     miner_rows = "".join(
         f"""
             <tr>
                 <td>{miner.name}</td>
                 <td>{miner.address}</td>
+                <td>{miner.group}</td>
                 <td><span class="color-sample" style="background-color: {miner.color};"></span>{miner.color}</td>
                 <td class="center-text">{"✅" if miner.tracked else ""}</td>
             </tr>
@@ -495,17 +554,7 @@ def generate_html(n_blocks, svg_content, stats):
         <p>This page was last updated at: {current_time}<br>Note: Data refreshes every minute. Refresh the page for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
         <h2>Statistics</h2>
-        <table>
-            <tr><th>Total Spend</th><td>{stats['total_spend']:,}</td></tr>
-            <tr><th>Total Coinbase Earned</th><td>{(stats['total_coinbase_earned']/1000000.0):,} STX</td></tr>
-            <tr><th>Total Fees Earned</th><td>{(stats['total_fees_earned']/1000000.0):,} STX</td></tr>
-            <tr><th>Total Earned</th><td>{((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):,} STX</td></tr>
-            <tr><th>Average Spend per Block</th><td>{stats['avg_spend_per_block']:,}</td></tr>
-            <tr><th>Win Percentage</th><td>{stats['win_percentage']:.2%}</td></tr>
-            <tr><th>Canonical Percentage</th><td>{stats['canonical_percentage']:.2%}</td></tr>
-            <tr><th>Price Ratio</th><td>{price_ratio_str} Sats/STX</td></tr>
-            <tr><th>Network Orphan Rate</th><td>{stats['orphan_rate']:.2%}</td></tr>
-        </table>
+        {table_str}
         <h2>Block Commits</h2>
         <div class="responsive-svg">
             {svg_content}
@@ -515,6 +564,7 @@ def generate_html(n_blocks, svg_content, stats):
             <tr>
                 <th>Name</th>
                 <th>Address</th>
+                <th>Group</th>
                 <th>Color</th>
                 <th>Tracked?</th>
             </tr>
@@ -553,8 +603,7 @@ def send_new_miner_alerts(miner_config, stats):
     for miner in new_miners:
         miner_config["miners"][miner.address] = {
             "name": miner.name,
-            "color": miner.color,
-            "track": False,
+            "group": miner.group,
         }
     with open(args.config_path, "w") as file:
         toml.dump(miner_config, file)
@@ -598,27 +647,28 @@ def run_command_line(args):
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
         stats = collect_stats(miner_config, commits)
+        print(stats)
 
         send_new_miner_alerts(miner_config, stats)
 
-        print(f"Total spend: {stats['total_spend']:,} Sats")
-        print(
-            f"Total coinbase earned: {(stats['total_coinbase_earned']/1000000.0):,} STX"
-        )
-        print(f"Total fees earned: {(stats['total_fees_earned']/1000000.0):,} STX")
-        print(
-            f"Total earned: {((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):,} STX"
-        )
-        print(f"Avg spend per block: {stats['avg_spend_per_block']:,} Sats")
-        print(f"Win %: {stats['win_percentage']:.2%}")
-        print(f"Canonical %: {stats['canonical_percentage']:.2%}")
-        if stats["total_coinbase_earned"] + stats["total_fees_earned"] > 0:
-            print(
-                f"Price ratio: {stats['total_spend']/((stats['total_coinbase_earned'] + stats['total_fees_earned'])/1000000.0):.2f} Sats/STX"
-            )
-        else:
-            print("Price ratio: N/A")
         print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
+        for group, group_stats in stats["group_stats"].items():
+            print(f"Group: {group}")
+            print(f"  Total spend: {group_stats['spend']:,} Sats")
+            print(
+                f"  Total coinbase earned: {(group_stats['coinbase_earned']/1000000.0):,} STX"
+            )
+            print(
+                f"  Total fees earned: {(group_stats['fees_earned']/1000000.0):,} STX"
+            )
+            print(
+                f"  Total earned: {((group_stats['coinbase_earned'] + group_stats['fees_earned'])/1000000.0):,} STX"
+            )
+            print(f"  Avg spend per block: {group_stats['avg_spend_per_block']:,} Sats")
+            print(f"  Win %: {group_stats['win_percentage']:.2%}")
+            print(f"  Canonical %: {group_stats['canonical_percentage']:.2%}")
+            print(f"  Orphan rate: {group_stats['orphan_rate']:.2%}")
+            print(f"  Price ratio: {group_stats['price_ratio']:.2f} Sats/STX")
 
         # Generate and save HTML content
         html_content = generate_html(last_n_blocks, svg_string, stats)
