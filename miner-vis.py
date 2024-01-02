@@ -16,6 +16,7 @@ from flask import Flask, request, abort, send_from_directory
 
 sortition_db = "mainnet/burnchain/sortition/marf.sqlite"
 chainstate_db = "mainnet/chainstate/vm/index.sqlite"
+mempool_db = "mainnet/chainstate/mempool.sqlite"
 default_color = "white"
 cost_limits = {
     "write_length": 15_000_000,
@@ -564,9 +565,14 @@ def generate_html(n_blocks, svg_content, stats):
         </nav>
         <p>This page was last updated at: {current_time}<br>Note: Data refreshes every minute. Refresh the page for the latest.</p>
         <h1>Last {n_blocks} Blocks</h1>
-        <h2>Statistics</h2>
+        <h2>Network Stats</h2>
+        <ul>
+            <li><b>Ready transactions:</b> {stats['mempool']['ready_tx_count']}</li>
+            <li><b>Pending transactions:</b> {stats['mempool']['pending_tx_count']}</li>
+            <li><b>Network orphan rate:</b> {stats['orphan_rate']:.2%}</li>
+        </ul>
+        <h2>Miner Stats</h2>
         {table_str}
-        <p><b>Network orphan rate:</b> {stats['orphan_rate']:.2%}</p>
         <h2>Block Commits</h2>
         <div class="responsive-svg">
             {svg_content}
@@ -666,6 +672,40 @@ def send_spend_alerts(miner_config, stats):
                 toml.dump(miner_config, file)
 
 
+def get_mempool_stats(db_path):
+    ready_query = """SELECT COUNT(*)
+FROM mempool m
+INNER JOIN nonces n_origin ON m.origin_address = n_origin.address
+LEFT JOIN nonces n_sponsor ON m.sponsor_address = n_sponsor.address AND m.sponsor_address != ''
+WHERE m.origin_nonce = (n_origin.nonce + 1)
+  AND (m.sponsor_address = '' OR m.sponsor_nonce = (n_sponsor.nonce + 1));"""
+    pending_query = """SELECT COUNT(*)
+FROM mempool m
+INNER JOIN nonces n_origin ON m.origin_address = n_origin.address
+LEFT JOIN nonces n_sponsor ON m.sponsor_address = n_sponsor.address AND m.sponsor_address != ''
+WHERE m.origin_nonce > (n_origin.nonce + 1)
+  AND (m.sponsor_address = '' OR m.sponsor_nonce > (n_sponsor.nonce + 1));"""
+    old_query = """SELECT COUNT(*)
+FROM mempool m
+INNER JOIN nonces n_origin ON m.origin_address = n_origin.address
+LEFT JOIN nonces n_sponsor ON m.sponsor_address = n_sponsor.address AND m.sponsor_address != ''
+WHERE m.origin_nonce <= (n_origin.nonce + 1)
+  AND (m.sponsor_address = '' OR m.sponsor_nonce <= (n_sponsor.nonce + 1));"""
+
+    conn = sqlite3.connect(os.path.join(db_path, mempool_db))
+    cursor = conn.cursor()
+    ready_tx_count = cursor.execute(ready_query).fetchone()[0]
+    pending_tx_count = cursor.execute(pending_query).fetchone()[0]
+    old_tx_count = cursor.execute(old_query).fetchone()[0]
+    conn.close()
+
+    return {
+        "ready_tx_count": ready_tx_count,
+        "pending_tx_count": pending_tx_count,
+        "old_tx_count": old_tx_count,
+    }
+
+
 def run_server(args):
     app = Flask(__name__, static_folder="output", static_url_path="")
     lock = Lock()
@@ -714,10 +754,13 @@ def run_command_line(args):
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
         stats = collect_stats(miner_config, commits)
+        stats["mempool"] = get_mempool_stats(miner_config.get("db_path"))
 
         send_new_miner_alerts(miner_config, stats)
         send_spend_alerts(miner_config, stats)
 
+        print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
+        print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
         print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
         for group, group_stats in stats["group_stats"].items():
             print(f"Group: {group}")
