@@ -678,17 +678,17 @@ def send_high_spend_alerts(miner_config, stats):
                 print(
                     f"High spend detected for block {block_height}: group {group} spent {spend:,} Sats"
                 )
-                # response = requests.post(
-                #     webhook,
-                #     data=json_data,
-                #     headers={"Content-Type": "application/json"},
-                # )
+                response = requests.post(
+                    webhook,
+                    data=json_data,
+                    headers={"Content-Type": "application/json"},
+                )
 
-                # # Check if the POST request was successful
-                # if response.status_code != 200:
-                #     print(
-                #         f"Failed to send spend alert. Status code: {response.status_code}, Response: {response.text}"
-                #     )
+                # Check if the POST request was successful
+                if response.status_code != 200:
+                    print(
+                        f"Failed to send spend alert. Status code: {response.status_code}, Response: {response.text}"
+                    )
 
             # Update the config file with the last alert block to avoid repeat alerts
             miner_config["last_alert_block_high"] = block_height
@@ -720,6 +720,7 @@ def send_low_spend_alerts(miner_config, stats):
     if last5_price_ratio < (stats["stx_price"] * alert_low_total_spend):
         data_to_send = {
             "type": "low_spend",
+            "block_height": last5[0],
             "last5_price": last5_price_ratio,
             "market_price": stats["stx_price"],
         }
@@ -729,15 +730,15 @@ def send_low_spend_alerts(miner_config, stats):
             f"Low spend detected: {last5_price_ratio:.2f} Sats/STX (threshold: {stats['stx_price'] * alert_low_total_spend:.2f} Sats/STX)"
         )
 
-        # response = requests.post(
-        #     webhook, data=json_data, headers={"Content-Type": "application/json"}
-        # )
+        response = requests.post(
+            webhook, data=json_data, headers={"Content-Type": "application/json"}
+        )
 
-        # # Check if the POST request was successful
-        # if response.status_code != 200:
-        #     print(
-        #         f"Failed to send low spend alert. Status code: {response.status_code}, Response: {response.text}"
-        #     )
+        # Check if the POST request was successful
+        if response.status_code != 200:
+            print(
+                f"Failed to send low spend alert. Status code: {response.status_code}, Response: {response.text}"
+            )
 
     # Update the config file with the last alert block to avoid repeat alerts
     miner_config["last_alert_block_low"] = last5[0]
