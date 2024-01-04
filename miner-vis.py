@@ -630,6 +630,7 @@ def send_new_miner_alerts(miner_config, stats):
 
     data_to_send = {
         "type": "new_miners",
+        "block_height": max(stats["spend_by_block"].keys()),
         "new_miners": list(map(lambda x: x.address, new_miners)),
     }
     json_data = json.dumps(data_to_send)
