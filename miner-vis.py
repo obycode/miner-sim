@@ -454,10 +454,17 @@ def collect_stats(miner_config, commits):
     computed_stats = {
         key: compute_stats(value, len(blocks)) for key, value in group_stats.items()
     }
+
+    # Load the STX price (in Sats) from the file
+    price_path = "stx-price.txt"
+    with open(price_path, "r") as file:
+        stx_price = float(file.read())
+
     return {
         "group_stats": computed_stats,
         "miners": miners,
         "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
+        "stx_price": stx_price,
     }
 
 
@@ -570,6 +577,7 @@ def generate_html(n_blocks, svg_content, stats):
             <!-- <li><b>Ready transactions:</b> {stats['mempool']['ready_tx_count']}</li>
             <li><b>Pending transactions:</b> {stats['mempool']['pending_tx_count']}</li> -->
             <li><b>Network orphan rate:</b> {stats['orphan_rate']:.2%}</li>
+            <li><b>STX Price:</b> {stats['stx_price']:.2f} Sats</li>
         </ul>
         <h2>Miner Stats</h2>
         {table_str}
@@ -762,6 +770,7 @@ def run_command_line(args):
         # print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
         # print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
         print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
+        print(f"STX Price: {stats['stx_price']:.2f} Sats")
         for group, group_stats in stats["group_stats"].items():
             print(f"Group: {group}")
             print(f"  Total spend: {group_stats['spend']:,} Sats")
