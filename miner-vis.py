@@ -721,8 +721,8 @@ def send_low_spend_alerts(miner_config, stats):
         data_to_send = {
             "type": "low_spend",
             "block_height": last5[0],
-            "last5_price": last5_price_ratio,
-            "market_price": stats["stx_price"],
+            "last5_price": round(last5_price_ratio),
+            "market_price": round(stats["stx_price"]),
         }
         json_data = json.dumps(data_to_send)
 
