@@ -407,6 +407,8 @@ def collect_stats(miner_config, commits):
     orphans = 0
     total_blocks = 0
     miners = {}
+    spend_by_block = {}
+    earn_by_block = {}
     for commit in commits.values():
         # Track the blocks
         blocks.add(commit.burn_block_height)
@@ -419,9 +421,21 @@ def collect_stats(miner_config, commits):
         # TODO: Find the Bitcoin fee paid and track it here too
         stats["spend"] += commit.spend
 
+        # Track the total spend for each block
+        spend_by_block[commit.burn_block_height] = (
+            spend_by_block.get(commit.burn_block_height, 0) + commit.spend
+        )
+
         # Track the total spend by the group for each block
         stats["spend_by_block"][commit.burn_block_height] = (
             stats["spend_by_block"].get(commit.burn_block_height, 0) + commit.spend
+        )
+
+        # Track the total coinbase and fees earned for each block
+        earn_by_block[commit.burn_block_height] = (
+            earn_by_block.get(commit.burn_block_height, 0)
+            + commit.coinbase_earned
+            + commit.fees_earned
         )
 
         if commit.won:
@@ -463,6 +477,8 @@ def collect_stats(miner_config, commits):
     return {
         "group_stats": computed_stats,
         "miners": miners,
+        "spend_by_block": spend_by_block,
+        "earn_by_block": earn_by_block,
         "orphan_rate": orphans / total_blocks if total_blocks > 0 else 0,
         "stx_price": stx_price,
     }
@@ -638,13 +654,13 @@ def send_new_miner_alerts(miner_config, stats):
         toml.dump(miner_config, file)
 
 
-def send_spend_alerts(miner_config, stats):
+def send_high_spend_alerts(miner_config, stats):
     webhook = miner_config.get("alert_webhook")
     alert_group_spend_sats = miner_config.get("alert_group_spend_sats")
     if not webhook or not alert_group_spend_sats:
         return
 
-    start_block = miner_config.get("last_alert_block", 0)
+    start_block = miner_config.get("last_alert_block_high", 0)
     for group, group_stats in stats.get("group_stats").items():
         for block_height, spend in group_stats.get("spend_by_block").items():
             if block_height <= start_block:
@@ -652,7 +668,7 @@ def send_spend_alerts(miner_config, stats):
 
             if spend > alert_group_spend_sats:
                 data_to_send = {
-                    "type": "spend",
+                    "type": "high_spend",
                     "group": group,
                     "block_height": block_height,
                     "spend": spend,
@@ -660,24 +676,73 @@ def send_spend_alerts(miner_config, stats):
                 json_data = json.dumps(data_to_send)
 
                 print(
-                    f"Sending spend alert for block {block_height}: group {group} spent {spend:,} Sats"
+                    f"High spend detected for block {block_height}: group {group} spent {spend:,} Sats"
                 )
-                response = requests.post(
-                    webhook,
-                    data=json_data,
-                    headers={"Content-Type": "application/json"},
-                )
+                # response = requests.post(
+                #     webhook,
+                #     data=json_data,
+                #     headers={"Content-Type": "application/json"},
+                # )
 
-                # Check if the POST request was successful
-                if response.status_code != 200:
-                    print(
-                        f"Failed to send spend alert. Status code: {response.status_code}, Response: {response.text}"
-                    )
+                # # Check if the POST request was successful
+                # if response.status_code != 200:
+                #     print(
+                #         f"Failed to send spend alert. Status code: {response.status_code}, Response: {response.text}"
+                #     )
 
             # Update the config file with the last alert block to avoid repeat alerts
-            miner_config["last_alert_block"] = block_height
+            miner_config["last_alert_block_high"] = block_height
             with open(args.config_path, "w") as file:
                 toml.dump(miner_config, file)
+
+
+def send_low_spend_alerts(miner_config, stats):
+    webhook = miner_config.get("alert_webhook")
+    alert_low_total_spend = miner_config.get("alert_low_total_spend")
+    if not webhook or not alert_low_total_spend:
+        return
+
+    last_alert_block = miner_config.get("last_alert_block_low", 0)
+
+    blocks = stats["spend_by_block"].keys()
+    last5 = sorted(blocks, reverse=True)[:5]
+
+    # Check if we've already alerted on this block
+    if last5[0] <= last_alert_block:
+        return
+
+    # Compute the average price (Sats/STX) for the last 5 blocks
+    last5_spend = sum(stats["spend_by_block"][block] for block in last5)
+    last5_earned = sum(stats["earn_by_block"][block] for block in last5)
+    last5_price_ratio = last5_spend / (last5_earned / 1000000.0)
+
+    # Send an alert if the price ratio is below the threshold
+    if last5_price_ratio < (stats["stx_price"] * alert_low_total_spend):
+        data_to_send = {
+            "type": "low_spend",
+            "last5_price": last5_price_ratio,
+            "market_price": stats["stx_price"],
+        }
+        json_data = json.dumps(data_to_send)
+
+        print(
+            f"Low spend detected: {last5_price_ratio:.2f} Sats/STX (threshold: {stats['stx_price'] * alert_low_total_spend:.2f} Sats/STX)"
+        )
+
+        # response = requests.post(
+        #     webhook, data=json_data, headers={"Content-Type": "application/json"}
+        # )
+
+        # # Check if the POST request was successful
+        # if response.status_code != 200:
+        #     print(
+        #         f"Failed to send low spend alert. Status code: {response.status_code}, Response: {response.text}"
+        #     )
+
+    # Update the config file with the last alert block to avoid repeat alerts
+    miner_config["last_alert_block_low"] = last5[0]
+    with open(args.config_path, "w") as file:
+        toml.dump(miner_config, file)
 
 
 def get_mempool_stats(db_path):
@@ -765,7 +830,8 @@ def run_command_line(args):
         stats["mempool"] = get_mempool_stats(miner_config.get("db_path"))
 
         send_new_miner_alerts(miner_config, stats)
-        send_spend_alerts(miner_config, stats)
+        send_high_spend_alerts(miner_config, stats)
+        send_low_spend_alerts(miner_config, stats)
 
         # print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
         # print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
