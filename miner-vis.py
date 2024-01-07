@@ -953,7 +953,10 @@ def run_command_line(args):
         # Generate and save HTML content
         html_content = generate_html(num_blocks, svg_string, stats)
 
-        basename = "index" if index == 0 else f"{num_blocks}"
+        if len(args.block_counts) == 1:
+            basename = "sample"
+        else:
+            basename = "index" if index == 0 else f"{num_blocks}"
         with open(f"output/{basename}.html", "w") as file:
             file.write(html_content)
 
