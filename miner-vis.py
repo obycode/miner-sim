@@ -97,6 +97,8 @@ class Commit:
         write_count=0,
         runtime=0,
         block_size=0,
+        potential_tip=False,
+        next_tip=False,
     ):
         self.block_header_hash = block_header_hash
         self.txid = txid
@@ -118,9 +120,11 @@ class Commit:
         self.write_count = write_count
         self.runtime = runtime
         self.block_size = block_size
+        self.potential_tip = potential_tip
+        self.next_tip = next_tip
 
     def __repr__(self):
-        return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,}, Children: {self.children})"
+        return f"Commit({self.block_header_hash[:8]}, Burn Block Height: {self.burn_block_height}, Spend: {self.spend:,})"
 
     def get_fullness(self):
         fullness = max(
@@ -147,14 +151,11 @@ class Miner:
         return f"Miner({self.address}, {self.name}, {self.group})"
 
 
-def get_block_commits_with_parents(db_path, last_n_blocks=1000):
+def get_block_commits_with_parents(db_path, start_block, num_blocks=100):
     conn = sqlite3.connect(os.path.join(db_path, sortition_db))
     cursor = conn.cursor()
 
-    # Pre-compute the maximum block height
-    cursor.execute("SELECT MAX(block_height) FROM block_commits")
-    max_block_height = cursor.fetchone()[0]
-    lower_bound_height = max_block_height - last_n_blocks
+    lower_bound_height = start_block - num_blocks
 
     # Fetch the necessary data to build the graph
     query = """
@@ -171,11 +172,11 @@ def get_block_commits_with_parents(db_path, last_n_blocks=1000):
     FROM
         block_commits
     WHERE
-        block_height > ?
+        block_height BETWEEN ? AND ?
     ORDER BY
         block_height ASC
     """
-    cursor.execute(query, (lower_bound_height,))
+    cursor.execute(query, (lower_bound_height, start_block))
     raw_commits = cursor.fetchall()
 
     # Prepare dictionaries to hold the parent hashes and total spends
@@ -195,8 +196,6 @@ def get_block_commits_with_parents(db_path, last_n_blocks=1000):
         parent_vtxindex,
     ) in raw_commits:
         parent = parent_hashes.get((parent_block_ptr, parent_vtxindex))
-        if parent:
-            commits[parent].children = True
 
         commits[block_header_hash] = Commit(
             block_header_hash,
@@ -216,7 +215,7 @@ def get_block_commits_with_parents(db_path, last_n_blocks=1000):
     return commits, sortition_sats
 
 
-def mark_canonical_blocks(db_path, commits):
+def mark_canonical_blocks(db_path, commits, start_block):
     conn = sqlite3.connect(os.path.join(db_path, sortition_db))
     cursor = conn.cursor()
 
@@ -233,7 +232,12 @@ def mark_canonical_blocks(db_path, commits):
         ):
             if winning_block_txid == commit.txid:
                 commit.won = True
+                commit.potential_tip = True
                 commit.stacks_height = stacks_height
+
+                # The parent of this node is no longer a potential tip
+                if commit.parent and commit.parent in commits:
+                    commits[commit.parent].potential_tip = False
 
                 # Fetch the coinbase and fees earned
                 chainstate_conn = sqlite3.connect(os.path.join(db_path, chainstate_db))
@@ -278,14 +282,18 @@ def mark_canonical_blocks(db_path, commits):
                     commit.stacks_height = parent_commit.stacks_height + 1
 
     # Mark the canonical chain
-    tip = cursor.execute(
-        "SELECT canonical_stacks_tip_hash FROM snapshots ORDER BY block_height DESC LIMIT 1;"
+    canonical_tip = cursor.execute(
+        "SELECT canonical_stacks_tip_hash FROM snapshots WHERE block_height = ?;",
+        (start_block,),
     ).fetchone()[0]
-
-    commits[tip].tip = True
+    conn.close()
+    commits[canonical_tip].tip = True
+    tip = canonical_tip
     while tip:
         commits[tip].canonical = True
         tip = commits[tip].parent
+
+    return canonical_tip
 
 
 def create_graph(miner_config, commits, sortition_sats):
@@ -322,7 +330,11 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
 
                 # Initialize the node attributes dictionary
                 node_attrs = {
-                    "color": "blue" if commit.won else "black",
+                    "color": "#00FF00"
+                    if commit.next_tip
+                    else "blue"
+                    if commit.won
+                    else "black",
                     "fillcolor": get_miner_color(miner_config, commit.sender),
                     "penwidth": "8" if commit.tip else "4" if commit.won else "1",
                     "style": "filled,solid",
@@ -781,6 +793,65 @@ WHERE m.origin_nonce <= (n_origin.nonce + 1)
     }
 
 
+def get_score_to_common_ancestor(tips, commits):
+    if not tips:
+        return None
+
+    scores = {}
+
+    # Bring all tips to the same stacks_height
+    min_height = min(commit.stacks_height for commit in tips)
+    max_height = max(commit.stacks_height for commit in tips)
+
+    tips_at_same_height = []
+    for tip in tips:
+        scores[tip.block_header_hash] = (
+            commits[tip.block_header_hash].burn_block_height
+            - commits[tip.block_header_hash].stacks_height
+        ) * (max_height - commits[tip.block_header_hash].stacks_height)
+        commit = tip
+        while commit.stacks_height > min_height:
+            scores[tip.block_header_hash] += (
+                commit.burn_block_height - commit.stacks_height
+            )
+            commit = commits.get(commit.parent)
+        tips_at_same_height.append((tip, commit))
+
+    # Trace back ancestors until a common ancestor is found
+    while any(
+        commit != tips_at_same_height[0][1] for tip, commit in tips_at_same_height
+    ):
+        tips_at_same_height = [
+            (tip, commits.get(commit.parent)) if commit else None
+            for tip, commit in tips_at_same_height
+        ]
+
+        # If any commit becomes None (reaches the beginning), there is no common ancestor
+        if any(commit is None for tip, commit in tips_at_same_height):
+            return None
+
+        # Update the scores
+        for tip, commit in tips_at_same_height:
+            scores[tip.block_header_hash] += (
+                commit.burn_block_height - commit.stacks_height
+            )
+
+    return scores
+
+
+def mark_next_tip(canonical_tip, max_fork_depth, commits):
+    tips = []
+    min_height = commits[canonical_tip].stacks_height - max_fork_depth
+    for commit in commits.values():
+        if commit.potential_tip and commit.stacks_height >= min_height:
+            tips.append(commit)
+
+    scores = get_score_to_common_ancestor(tips, commits)
+    if scores:
+        next_tip = min(scores, key=scores.get)
+        commits[next_tip].next_tip = True
+
+
 def run_server(args):
     app = Flask(__name__, static_folder="output", static_url_path="")
     lock = Lock()
@@ -815,16 +886,35 @@ def run_server(args):
     app.run(host="0.0.0.0", port=8080)
 
 
+def get_tip(db_path):
+    conn = sqlite3.connect(os.path.join(db_path, sortition_db))
+    cursor = conn.cursor()
+
+    # Pre-compute the maximum block height
+    cursor.execute("SELECT MAX(block_height) FROM block_commits")
+    tip = cursor.fetchone()[0]
+    conn.close()
+    return tip
+
+
 def run_command_line(args):
     with open(args.config_path, "r") as file:
         miner_config = toml.load(file)
 
-    for index, last_n_blocks in enumerate(args.block_counts):
-        print(f"Generating graph for last {last_n_blocks} blocks...")
+    if args.at_tip:
+        start_block = int(args.at_tip)
+    else:
+        start_block = get_tip(miner_config.get("db_path"))
+
+    for index, num_blocks in enumerate(args.block_counts):
+        print(f"Generating graph for blocks...")
         commits, sortition_sats = get_block_commits_with_parents(
-            miner_config.get("db_path"), last_n_blocks
+            miner_config.get("db_path"), start_block, num_blocks
         )
-        mark_canonical_blocks(miner_config.get("db_path"), commits)
+        canonical_tip = mark_canonical_blocks(
+            miner_config.get("db_path"), commits, start_block
+        )
+        mark_next_tip(canonical_tip, miner_config.get("max_fork_depth", 3), commits)
 
         svg_string = create_graph(miner_config, commits, sortition_sats)
 
@@ -835,32 +925,35 @@ def run_command_line(args):
         send_high_spend_alerts(miner_config, stats)
         send_low_spend_alerts(miner_config, stats)
 
-        # print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
-        # print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
-        print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
-        print(f"STX Price: {stats['stx_price']:.2f} Sats")
-        for group, group_stats in stats["group_stats"].items():
-            print(f"Group: {group}")
-            print(f"  Total spend: {group_stats['spend']:,} Sats")
-            print(
-                f"  Total coinbase earned: {(group_stats['coinbase_earned']/1000000.0):,} STX"
-            )
-            print(
-                f"  Total fees earned: {(group_stats['fees_earned']/1000000.0):,} STX"
-            )
-            print(
-                f"  Total earned: {((group_stats['coinbase_earned'] + group_stats['fees_earned'])/1000000.0):,} STX"
-            )
-            print(f"  Avg spend per block: {group_stats['avg_spend_per_block']:,} Sats")
-            print(f"  Win %: {group_stats['win_percentage']:.2%}")
-            print(f"  Canonical %: {group_stats['canonical_percentage']:.2%}")
-            print(f"  Orphan rate: {group_stats['orphan_rate']:.2%}")
-            print(f"  Price ratio: {group_stats['price_ratio']} Sats/STX")
+        if args.print_stats:
+            # print(f"Ready transactions: {stats['mempool']['ready_tx_count']}")
+            # print(f"Pending transactions: {stats['mempool']['pending_tx_count']}")
+            print(f"Network orphan rate: {stats['orphan_rate']:.2%}")
+            print(f"STX Price: {stats['stx_price']:.2f} Sats")
+            for group, group_stats in stats["group_stats"].items():
+                print(f"Group: {group}")
+                print(f"  Total spend: {group_stats['spend']:,} Sats")
+                print(
+                    f"  Total coinbase earned: {(group_stats['coinbase_earned']/1000000.0):,} STX"
+                )
+                print(
+                    f"  Total fees earned: {(group_stats['fees_earned']/1000000.0):,} STX"
+                )
+                print(
+                    f"  Total earned: {((group_stats['coinbase_earned'] + group_stats['fees_earned'])/1000000.0):,} STX"
+                )
+                print(
+                    f"  Avg spend per block: {group_stats['avg_spend_per_block']:,} Sats"
+                )
+                print(f"  Win %: {group_stats['win_percentage']:.2%}")
+                print(f"  Canonical %: {group_stats['canonical_percentage']:.2%}")
+                print(f"  Orphan rate: {group_stats['orphan_rate']:.2%}")
+                print(f"  Price ratio: {group_stats['price_ratio']} Sats/STX")
 
         # Generate and save HTML content
-        html_content = generate_html(last_n_blocks, svg_string, stats)
+        html_content = generate_html(num_blocks, svg_string, stats)
 
-        basename = "index" if index == 0 else f"{last_n_blocks}"
+        basename = "index" if index == 0 else f"{num_blocks}"
         with open(f"output/{basename}.html", "w") as file:
             file.write(html_content)
 
@@ -871,6 +964,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--observer", action="store_true", help="Run in observer mode (as a server)"
+    )
+    parser.add_argument(
+        "--print-stats",
+        action="store_true",
+        help="Print the stats to the console",
+    )
+    parser.add_argument(
+        "--at-tip", type=int, help="Burn block height at which to analyze"
     )
     parser.add_argument(
         "config_path", nargs="?", help="Path to the miner configuration file"
