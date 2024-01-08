@@ -26,6 +26,7 @@ cost_limits = {
     "runtime": 5_000_000_000,
     "size": 2 * 1024 * 1024,
 }
+bitcoin_tx_db = "output/bitcoin-tx.sqlite"
 
 
 def is_miner_known(miner_config, identifier):
@@ -230,6 +231,7 @@ def mark_canonical_blocks(db_path, commits, start_block):
         for commit in filter(
             lambda x: x.burn_block_height == block_height, commits.values()
         ):
+            # If the stacks_height is 0, this block has not been processed yet.
             if winning_block_txid == commit.txid:
                 commit.won = True
                 commit.potential_tip = True
@@ -239,42 +241,48 @@ def mark_canonical_blocks(db_path, commits, start_block):
                 if commit.parent and commit.parent in commits:
                     commits[commit.parent].potential_tip = False
 
-                # Fetch the coinbase and fees earned
-                chainstate_conn = sqlite3.connect(os.path.join(db_path, chainstate_db))
-                chainstate_cursor = chainstate_conn.cursor()
-                # Execute the query
-                result = chainstate_cursor.execute(
-                    "SELECT block_hash, coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
-                    (consensus_hash,),
-                ).fetchone()
+                # If the stacks_height is greater than 0, this block has been processed.
+                if stacks_height > 0:
+                    # Fetch the coinbase and fees earned
+                    chainstate_conn = sqlite3.connect(
+                        os.path.join(db_path, chainstate_db)
+                    )
+                    chainstate_cursor = chainstate_conn.cursor()
+                    # Execute the query
+                    result = chainstate_cursor.execute(
+                        "SELECT block_hash, coinbase, tx_fees_anchored, tx_fees_streamed FROM payments WHERE consensus_hash = ?;",
+                        (consensus_hash,),
+                    ).fetchone()
 
-                if result:
-                    (
-                        block_hash,
-                        coinbase,
-                        tx_fees_anchored,
-                        tx_fees_streamed,
-                    ) = result
-                    commit.block_hash = block_hash
-                    commit.coinbase_earned = int(coinbase)
-                    commit.fees_earned = int(tx_fees_anchored) + int(tx_fees_streamed)
+                    if result:
+                        (
+                            block_hash,
+                            coinbase,
+                            tx_fees_anchored,
+                            tx_fees_streamed,
+                        ) = result
+                        commit.block_hash = block_hash
+                        commit.coinbase_earned = int(coinbase)
+                        commit.fees_earned = int(tx_fees_anchored) + int(
+                            tx_fees_streamed
+                        )
 
-                # Fetch the block costs and size
-                result = chainstate_cursor.execute(
-                    "SELECT cost, block_size FROM block_headers WHERE block_hash = ?;",
-                    (block_hash,),
-                ).fetchone()
-                if result:
-                    cost_string, block_size = result
-                    costs = json.loads(cost_string)
-                    commit.read_length = int(costs["read_length"])
-                    commit.read_count = int(costs["read_count"])
-                    commit.write_length = int(costs["write_length"])
-                    commit.write_count = int(costs["write_count"])
-                    commit.runtime = int(costs["runtime"])
-                    commit.block_size = int(block_size)
+                    # Fetch the block costs and size
+                    result = chainstate_cursor.execute(
+                        "SELECT cost, block_size FROM block_headers WHERE block_hash = ?;",
+                        (block_hash,),
+                    ).fetchone()
+                    if result:
+                        cost_string, block_size = result
+                        costs = json.loads(cost_string)
+                        commit.read_length = int(costs["read_length"])
+                        commit.read_count = int(costs["read_count"])
+                        commit.write_length = int(costs["write_length"])
+                        commit.write_count = int(costs["write_count"])
+                        commit.runtime = int(costs["runtime"])
+                        commit.block_size = int(block_size)
 
-                chainstate_conn.close()
+                    chainstate_conn.close()
 
             else:
                 if commit.parent and commit.parent in commits:
@@ -380,11 +388,76 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
     return dot.pipe(format="svg").decode("utf-8")
 
 
+# Using the RPC endpoints from the node won't work because this endpoint does
+# not explicitly return the fee. It can be looked up from the data returned
+# here, but that would require retrieving the input UTXO and calculating the
+# fee manually. Since we don't have the block hash for the input UTXO, and
+# the node doesn't have transaction indexing enabled (txindex=1), we can't
+# look up the input UTXO.
+def get_bitcoin_transaction_rpc(bitcoin_rpc_url, txid, block_hash):
+    payload = {
+        "method": "getrawtransaction",
+        "params": [txid, True, block_hash],
+        "jsonrpc": "2.0",
+        "id": 1,
+    }
+    headers = {"content-type": "application/json"}
+    response = requests.post(bitcoin_rpc_url, data=json.dumps(payload), headers=headers)
+    return response.json()
+
+
+def ensure_bitcoin_tx_db_exists():
+    # Connect to the SQLite database (this will create it if it doesn't exist)
+    conn = sqlite3.connect(bitcoin_tx_db)
+
+    # Create the table if it doesn't exist
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS bitcoin_transactions
+                 (txid TEXT PRIMARY KEY, 
+                  fee INTEGER)"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_bitcoin_fee(txid):
+    # Connect to the database
+    conn = sqlite3.connect(bitcoin_tx_db)
+    cursor = conn.cursor()
+
+    # Try to fetch the transaction from the database
+    cursor.execute("SELECT fee FROM bitcoin_transactions WHERE txid = ?", (txid,))
+    row = cursor.fetchone()
+
+    if row:
+        # If found in the database, return the data
+        conn.close()
+        return row[0]
+    else:
+        # If not found, fetch from the API
+        url = f"https://mempool.space/api/tx/{txid}"
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            # Store the fetched data in the database
+            cursor.execute(
+                "INSERT INTO bitcoin_transactions (txid, fee) VALUES (?, ?)",
+                (txid, response.json()["fee"]),
+            )
+            conn.commit()
+            conn.close()
+            return response.json()["fee"]
+        else:
+            conn.close()
+            return None
+
+
 zero_stats = {
     "commits": 0,
     "wins": 0,
     "canonical": 0,
     "spend": 0,
+    "btc_fees": 0,
     "coinbase_earned": 0,
     "fees_earned": 0,
     "spend_by_block": {},
@@ -395,6 +468,8 @@ def compute_stats(stats, num_blocks):
     total_earned = stats["coinbase_earned"] + stats["fees_earned"]
     return {
         "spend": stats["spend"],
+        "btc_fees": stats["btc_fees"],
+        "total_spend": stats["spend"] + stats["btc_fees"],
         "spend_by_block": stats["spend_by_block"],
         "coinbase_earned": stats["coinbase_earned"],
         "fees_earned": stats["fees_earned"],
@@ -404,7 +479,7 @@ def compute_stats(stats, num_blocks):
         "orphan_rate": (stats["wins"] - stats["canonical"]) / stats["wins"]
         if stats["wins"] > 0
         else 0,
-        "price_ratio": f"{stats['spend'] / (total_earned / 1000000.0):.2f}"
+        "price_ratio": f"{(stats['spend'] + stats['btc_fees']) / (total_earned / 1000000.0):.2f}"
         if total_earned > 0
         else "0"
         if stats["spend"] == 0
@@ -430,17 +505,23 @@ def collect_stats(miner_config, commits):
         stats = group_stats.get(group, copy.deepcopy(zero_stats))
 
         stats["commits"] += 1
-        # TODO: Find the Bitcoin fee paid and track it here too
         stats["spend"] += commit.spend
+
+        fee = get_bitcoin_fee(commit.txid)
+        if not fee:
+            fee = 0
+        stats["btc_fees"] += fee
 
         # Track the total spend for each block
         spend_by_block[commit.burn_block_height] = (
-            spend_by_block.get(commit.burn_block_height, 0) + commit.spend
+            spend_by_block.get(commit.burn_block_height, 0) + commit.spend + fee
         )
 
         # Track the total spend by the group for each block
         stats["spend_by_block"][commit.burn_block_height] = (
-            stats["spend_by_block"].get(commit.burn_block_height, 0) + commit.spend
+            stats["spend_by_block"].get(commit.burn_block_height, 0)
+            + commit.spend
+            + fee
         )
 
         # Track the total coinbase and fees earned for each block
@@ -516,9 +597,11 @@ def generate_html(n_blocks, svg_content, stats):
 
     # Rows for each stat
     stat_names = [
-        ("spend", "Total spend"),
-        ("coinbase_earned", "Total Coinbase earned"),
-        ("fees_earned", "Total Fees earned"),
+        ("spend", "Total PoX spend"),
+        ("btc_fees", "Total Bitcoin fees"),
+        ("total_spend", "Total spend"),
+        ("coinbase_earned", "Total coinbase earned"),
+        ("fees_earned", "Total fees earned"),
         ("total_earned", "Total earned"),
         ("avg_spend_per_block", "Avg spend per block"),
         ("win_percentage", "Win %"),
@@ -535,7 +618,12 @@ def generate_html(n_blocks, svg_content, stats):
                 value = f"{group[stat_name]:.2%}"
             elif stat_name in ["coinbase_earned", "fees_earned", "total_earned"]:
                 value = f"{(group[stat_name] / 1000000.0):,} STX"
-            elif stat_name in ["spend", "avg_spend_per_block"]:
+            elif stat_name in [
+                "spend",
+                "avg_spend_per_block",
+                "btc_fees",
+                "total_spend",
+            ]:
                 value = f"{group[stat_name]:,} Sats"
             else:
                 value = f"{group[stat_name]:,}"
@@ -906,6 +994,8 @@ def run_command_line(args):
     else:
         start_block = get_tip(miner_config.get("db_path"))
 
+    ensure_bitcoin_tx_db_exists()
+
     for index, num_blocks in enumerate(args.block_counts):
         print(f"Generating graph for blocks...")
         commits, sortition_sats = get_block_commits_with_parents(
@@ -932,7 +1022,9 @@ def run_command_line(args):
             print(f"STX Price: {stats['stx_price']:.2f} Sats")
             for group, group_stats in stats["group_stats"].items():
                 print(f"Group: {group}")
-                print(f"  Total spend: {group_stats['spend']:,} Sats")
+                print(f"  PoX spend: {group_stats['spend']:,} Sats")
+                print(f"  Bitcoin fees: {group_stats['btc_fees']:,} Sats")
+                print(f"  Total spend: {group_stats['btc_fees']:,} Sats")
                 print(
                     f"  Total coinbase earned: {(group_stats['coinbase_earned']/1000000.0):,} STX"
                 )
