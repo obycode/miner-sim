@@ -239,7 +239,9 @@ def mark_canonical_blocks(db_path, commits, start_block):
 
                 # The parent of this node is no longer a potential tip
                 if commit.parent and commit.parent in commits:
-                    commits[commit.parent].potential_tip = False
+                    parent_commit = commits[commit.parent]
+                    parent_commit.potential_tip = False
+                    commit.stacks_height = parent_commit.stacks_height + 1
 
                 # If the stacks_height is greater than 0, this block has been processed.
                 if stacks_height > 0:
