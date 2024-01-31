@@ -817,7 +817,7 @@ def send_low_spend_alerts(miner_config, stats):
     # Compute the average price (Sats/STX) for the last 5 blocks
     last5_spend = sum(stats["spend_by_block"][block] for block in last5)
     last5_earned = sum(stats["earn_by_block"][block] for block in last5)
-    last5_price_ratio = last5_spend / (last5_earned / 1000000.0)
+    last5_price_ratio = last5_spend / (last5_earned / 1000000.0) if last5_earned != 0 else 0
 
     # Send an alert if the price ratio is below the threshold
     if last5_price_ratio < (stats["stx_price"] * alert_low_total_spend):
