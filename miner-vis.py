@@ -13,6 +13,7 @@ import datetime
 import re
 import toml
 from flask import Flask, request, abort, send_from_directory
+import time
 
 sortition_db = "mainnet/burnchain/sortition/marf.sqlite"
 chainstate_db = "mainnet/chainstate/vm/index.sqlite"
@@ -817,7 +818,9 @@ def send_low_spend_alerts(miner_config, stats):
     # Compute the average price (Sats/STX) for the last 5 blocks
     last5_spend = sum(stats["spend_by_block"][block] for block in last5)
     last5_earned = sum(stats["earn_by_block"][block] for block in last5)
-    last5_price_ratio = last5_spend / (last5_earned / 1000000.0) if last5_earned != 0 else 0
+    last5_price_ratio = (
+        last5_spend / (last5_earned / 1000000.0) if last5_earned != 0 else 0
+    )
 
     # Send an alert if the price ratio is below the threshold
     if last5_price_ratio < (stats["stx_price"] * alert_low_total_spend):
@@ -845,6 +848,48 @@ def send_low_spend_alerts(miner_config, stats):
 
     # Update the config file with the last alert block to avoid repeat alerts
     miner_config["last_alert_block_low"] = last5[0]
+    with open(args.config_path, "w") as file:
+        toml.dump(miner_config, file)
+
+
+def send_no_canonical_block_alert(miner_config):
+    webhook = miner_config.get("alert_webhook")
+    alert_low_total_spend = miner_config.get("alert_low_total_spend")
+    if not webhook or not alert_low_total_spend:
+        return
+
+    tip = get_tip(miner_config.get("db_path"))
+
+    last_alert_block = miner_config.get("last_block", tip)
+    last_alert_time = miner_config.get("last_alert_time", int(time.time()))
+
+    if tip == last_alert_block:
+        return
+
+    if time.time() - last_alert_time < 3600:
+        return
+
+    data_to_send = {
+        "type": "no_canonical_block",
+        "block_height": tip,
+    }
+    json_data = json.dumps(data_to_send)
+
+    print(f"No canonical block detected: {tip}")
+
+    response = requests.post(
+        webhook, data=json_data, headers={"Content-Type": "application/json"}
+    )
+
+    # Check if the POST request was successful
+    if response.status_code != 200:
+        print(
+            f"Failed to send no canonical block alert. Status code: {response.status_code}, Response: {response.text}"
+        )
+
+    # Update the config file with the last alert block to avoid repeat alerts
+    miner_config["last_block"] = tip
+    miner_config["last_alert_time"] = int(time.time())
     with open(args.config_path, "w") as file:
         toml.dump(miner_config, file)
 
