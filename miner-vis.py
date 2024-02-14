@@ -298,11 +298,12 @@ def mark_canonical_blocks(db_path, commits, start_block):
         (start_block,),
     ).fetchone()[0]
     conn.close()
-    commits[canonical_tip].tip = True
-    tip = canonical_tip
-    while tip:
-        commits[tip].canonical = True
-        tip = commits[tip].parent
+    if canonical_tip in commits:
+        commits[canonical_tip].tip = True
+        tip = canonical_tip
+        while tip and tip in commits:
+            commits[tip].canonical = True
+            tip = commits[tip].parent
 
     return canonical_tip
 
@@ -341,11 +342,11 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
 
                 # Initialize the node attributes dictionary
                 node_attrs = {
-                    "color": "#00FF00"
-                    if commit.next_tip
-                    else "blue"
-                    if commit.won
-                    else "black",
+                    "color": (
+                        "#00FF00"
+                        if commit.next_tip
+                        else "blue" if commit.won else "black"
+                    ),
                     "fillcolor": get_miner_color(miner_config, commit.sender),
                     "penwidth": "8" if commit.tip else "4" if commit.won else "1",
                     "style": "filled,solid",
@@ -362,9 +363,9 @@ Tracked Spend: {tracked_spend:,} ({tracked_spend/sortition_sats[commit.sortition
 
                 # If we have the block hash, link to the explorer
                 if commit.block_hash:
-                    node_attrs[
-                        "href"
-                    ] = f"https://explorer.hiro.so/block/0x{commit.block_hash}"
+                    node_attrs["href"] = (
+                        f"https://explorer.hiro.so/block/0x{commit.block_hash}"
+                    )
 
                 # Now use the dictionary to set attributes
                 c.node(commit.block_header_hash, node_label, **node_attrs)
@@ -479,14 +480,16 @@ def compute_stats(stats, num_blocks):
         "avg_spend_per_block": round(stats["spend"] / num_blocks),
         "win_percentage": stats["wins"] / num_blocks,
         "canonical_percentage": stats["canonical"] / num_blocks,
-        "orphan_rate": (stats["wins"] - stats["canonical"]) / stats["wins"]
-        if stats["wins"] > 0
-        else 0,
-        "price_ratio": f"{(stats['spend'] + stats['btc_fees']) / (total_earned / 1000000.0):.2f}"
-        if total_earned > 0
-        else "0"
-        if stats["spend"] == 0
-        else "∞",
+        "orphan_rate": (
+            (stats["wins"] - stats["canonical"]) / stats["wins"]
+            if stats["wins"] > 0
+            else 0
+        ),
+        "price_ratio": (
+            f"{(stats['spend'] + stats['btc_fees']) / (total_earned / 1000000.0):.2f}"
+            if total_earned > 0
+            else "0" if stats["spend"] == 0 else "∞"
+        ),
         "total_earned": total_earned,
     }
 
